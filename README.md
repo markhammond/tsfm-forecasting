@@ -1,7 +1,8 @@
 # Tsfm.Forecasting
 
 Native .NET inference for time-series foundation models, on CPU or GPU via
-TorchSharp. Currently [Kronos](https://github.com/shiyu-coder/Kronos) and [TimesFM 3.0](https://github.com/google-research/timesfm).
+TorchSharp. Currently [Kronos](https://github.com/shiyu-coder/Kronos), [TimesFM 3.0](https://github.com/google-research/timesfm)
+and [t0](https://huggingface.co/theforecastingcompany/t0-beta) (t0-alpha, t0-beta).
 
 [![ci](https://github.com/markhammond/tsfm-forecasting/actions/workflows/ci.yml/badge.svg)](https://github.com/markhammond/tsfm-forecasting/actions/workflows/ci.yml)
 
@@ -16,12 +17,13 @@ NuGet packages:
 | Tsfm.Forecasting.Kronos.Weights.Small [![NuGet](https://img.shields.io/nuget/v/Tsfm.Forecasting.Kronos.Weights.Small.svg)](https://www.nuget.org/packages/Tsfm.Forecasting.Kronos.Weights.Small) | MIT | Kronos-small (24.7M) + Tokenizer-base |
 | Tsfm.Forecasting.Kronos.Weights.Mini [![NuGet](https://img.shields.io/nuget/v/Tsfm.Forecasting.Kronos.Weights.Mini.svg)](https://www.nuget.org/packages/Tsfm.Forecasting.Kronos.Weights.Mini) | MIT | Kronos-mini (4.1M) + Tokenizer-2k |
 | Tsfm.Forecasting.TimesFm [![NuGet](https://img.shields.io/nuget/v/Tsfm.Forecasting.TimesFm.svg)](https://www.nuget.org/packages/Tsfm.Forecasting.TimesFm) | **Apache-2.0** | TimesFM 3.0 — **no weights** |
+| Tsfm.Forecasting.T0 [![NuGet](https://img.shields.io/nuget/v/Tsfm.Forecasting.T0.svg)](https://www.nuget.org/packages/Tsfm.Forecasting.T0) | **Apache-2.0** | t0-alpha, t0-beta — open weights, fetched separately |
 
 Refer to respective package for license and conditions of use (if any).
 
 ## Why this exists
 
-Neither model is a text LLM, so existing .NET inference runtimes cannot load them.
+None of these models is a text LLM, so existing .NET inference runtimes cannot load them.
 Kronos pairs a Binary Spherical Quantization autoencoder with a decoder that has a
 hierarchical two-subtoken embedding, a dependency-aware cross-attention layer and two
 conditional heads. GGUF has no representation for any of that, which rules out
@@ -103,6 +105,54 @@ costs no more than a point forecast. Every OHLCVA channel is supplied as a varia
 marked a target: preprocessing masks future covariate slots only for target variates, so
 a channel left non-target would be handed its own future values.
 
+## t0 — open weights, fetched
+
+[t0](https://arxiv.org/abs/2609.24559) from The Forecasting Company is a decoder-style patch
+transformer alternating causal time attention with variate (group) attention, with native
+known-future covariates. Both checkpoints are **Apache-2.0**. They are fetched rather than
+packaged only because each exceeds nuget.org's 250 MB limit.
+
+| Checkpoint | Params | Quantiles | Scaler eps |
+|---|---|---|---|
+| t0-alpha | 102M | 5 (0.1 … 0.9) | 0.1, variance offset |
+| t0-beta | 256M | 21 (0.01 … 0.99) | 0.01, std clamp |
+
+```
+dotnet add package Tsfm.Forecasting.T0
+dotnet add package TorchSharp-cpu
+./scripts/fetch-t0-checkpoint.sh            # both; or name one: t0-alpha | t0-beta
+```
+
+```csharp
+using Tsfm.Forecasting.T0;
+
+var t0 = T0Forecaster.Load("checkpoints/t0-beta", new Device("mps"));
+
+// Same shape as TimesFM: variate-major series, known-future flags, target index.
+double[,] q = t0.ForecastJoint(series, variates: 3, contextBars: 512, horizon: 24,
+                               knownFuture: [false, true, true]);   // [step, quantile]
+double[,] r = t0.Forecast(ohlcva, horizon: 4);                      // forward returns
+```
+
+Both forecasters implement `IQuantileForecaster`, so one call site drives either;
+`Quantiles` names the columns, whose count differs per checkpoint. `samples/GroceryCovariates`
+runs on either (`-- t0-beta`).
+
+What differs from TimesFM:
+
+- **Any context length.** The context is left-padded onto the 32-step patch grid and the
+  padding masked, so nothing need fill whole patches. No ceiling is imposed; the reference
+  evaluates at 8192.
+- **Up to 1024 steps per pass.** Every horizon patch is decoded at once. The reference
+  continues past 1024 by an autoregressive rollout over quantile paths, which is not ported.
+- **Known-future series cannot read the targets.** Group attention lets a known-future row
+  attend only to other known-future rows, so information flows from covariates into
+  targets and never back. They are scaled by global rather than causal statistics.
+- **Each checkpoint names its own scaler convention.** t0-beta's `config.json` carries
+  `scaler_eps` and `scaler_eps_mode`; alpha's predates them, so their absence means alpha's
+  values. Running beta under alpha's convention loads cleanly and silently degrades the
+  forecast — which is why they are read rather than assumed.
+
 ## Choose your own backend
 
 Neither model package propagates a native runtime, because the right one is platform-
@@ -128,10 +178,10 @@ by placing a tensor rather than trusting the name.
 the NuGet package is never used. Without it, loading fails with a message claiming the
 backend reference is missing — which it is not.
 
-**Neither model has a key-value cache.** Attention is recomputed over the whole context
-at every decode step, matching both references. A cache would change the arithmetic and
+**No model has a key-value cache.** Attention is recomputed over the whole context
+at every decode step, matching the references. A cache would change the arithmetic and
 forfeit checkable parity. For Kronos this costs `horizon` full passes per rollout, so
-long horizons are expensive; TimesFM emits its whole horizon in one pass and is
+long horizons are expensive; TimesFM and t0 emit their whole horizon in one pass and are
 unaffected.
 
 ## Parity
@@ -156,6 +206,19 @@ and let every position attend to its own future; and the reference leaves
 `rescale_logits` false, making its logits `QK^T * sqrt(d)` rather than the conventional
 `QK^T / sqrt(d)`.
 
+**t0.** Every stage — scaling, attention masks, patch embedding, each layer, the
+quantile head, the rescale — agrees with `tfc-t0` 0.6.0 to float32 rounding: masks and
+scaling are bit-exact, layers within 6e-7 relative, forecasts within 5e-7. Each stage is
+fed the reference's previous output, so a fault cannot hide behind an earlier one. The
+end-to-end cases include the quickstart notebook's own examples: on the electricity-price
+series, t0-beta's median misses the truth by 6.522 without covariates and 2.067 with them
+(notebook: 6.528 without, recorded on different hardware), and the port reproduces
+the reference to the same digits. Three details would each have produced plausible
+forecasts if missed: rotary pairs are interleaved where TimesFM's are split in halves; the
+QK norm precedes the rotation, where TimesFM's follows it; and a padding patch has no key
+to attend to, so attention must return zero there, not NaN, or every row reading it is
+poisoned.
+
 ```bash
 ./scripts/fetch-checkpoints.sh                       # Kronos
 dotnet test tests/Tsfm.Forecasting.Kronos.Tests -c Release
@@ -165,6 +228,12 @@ dotnet test tests/Tsfm.Forecasting.Kronos.Tests -c Release
 python3 -m venv .venv && ./.venv/bin/pip install torch safetensors numpy huggingface_hub
 ./.venv/bin/python reference/dump_timesfm_parity.py
 dotnet run --project tests/Tsfm.Forecasting.TimesFm.Parity -c Release
+
+./scripts/fetch-t0-checkpoint.sh                     # t0, Apache-2.0
+./.venv/bin/pip install "tfc-t0[torch]==0.6.0" pandas pyarrow
+./.venv/bin/python reference/dump_t0_parity.py checkpoints/t0-alpha
+./.venv/bin/python reference/dump_t0_parity.py checkpoints/t0-beta
+dotnet run --project tests/Tsfm.Forecasting.T0.Parity -c Release -- t0-alpha t0-beta
 ```
 
 ## Attribution
@@ -179,5 +248,11 @@ packages, which record the revision each was built from.
 Google LLC, Apache-2.0. No Google source files and no weights are redistributed here;
 both are fetched at pinned revisions by the scripts above.
 
-This project is an independent port and is not affiliated with or endorsed by either.
+**t0.** Derived from [tfc-t0](https://github.com/theforecastingcompany/tfc-t0),
+Copyright 2026 The Forecasting Company, Apache-2.0, which in turn builds on Datadog's
+[Toto](https://github.com/DataDog/toto) and Amazon's
+[Chronos-2](https://github.com/amazon-science/chronos-forecasting), both Apache-2.0. No
+weights or upstream sources are redistributed; checkpoints are fetched at pinned revisions.
+
+This project is an independent port and is not affiliated with or endorsed by any of them.
 See NOTICE for the full attribution and the statement of changes.

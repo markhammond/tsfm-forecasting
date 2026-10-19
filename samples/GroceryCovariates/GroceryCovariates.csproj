@@ -12,6 +12,7 @@
 
     <ItemGroup>
         <ProjectReference Include="..\..\src\Tsfm.Forecasting.TimesFm\Tsfm.Forecasting.TimesFm.csproj" />
+        <ProjectReference Include="..\..\src\Tsfm.Forecasting.T0\Tsfm.Forecasting.T0.csproj" />
     </ItemGroup>
 
 </Project>

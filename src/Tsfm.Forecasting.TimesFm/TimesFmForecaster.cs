@@ -13,11 +13,15 @@ namespace Tsfm.Forecasting.TimesFm;
 /// </summary>
 /// <remarks>Inference is not thread safe.</remarks>
 public sealed class TimesFmForecaster(TimesFmModel model, TimesFmConfig config, Device device)
+    : IQuantileForecaster
 {
     private const int CloseChannel = 3;    // open, high, low, close, volume, amount
     private const int Channels = 6;
 
     public TimesFmConfig Config => config;
+
+    /// <inheritdoc/>
+    public IReadOnlyList<double> Quantiles => config.Quantiles;
 
     public static TimesFmForecaster Load(string checkpointDir, Device device)
     {

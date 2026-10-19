@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+### Tsfm.Forecasting.T0 (Apache-2.0) — new
+
+- Inference for The Forecasting Company's **t0-alpha** (102M) and **t0-beta** (256M), ported
+  from `tfc-t0` 0.6.0: causal scaler, patch encoder, alternating time/group transformer
+  with xPos rotary embedding, residual decoder, monotone quantile head.
+- `T0Forecaster` takes the TimesFM shape: `ForecastJoint` over variate-major series with
+  known-future flags and a target index, and `Forecast` over OHLCVA for forward returns.
+  Unlike TimesFM, any context length is accepted (left-padded onto the patch grid and
+  masked), and up to 1024 steps are decoded in one pass.
+- Each checkpoint's scaler convention is read from its `config.json`. t0-beta's differs
+  from alpha's, and running it under alpha's loads cleanly and forecasts worse.
+- Verified stage by stage against the reference, both checkpoints, including the
+  quickstart notebook's electricity-price and M4 examples (`tests/Tsfm.Forecasting.T0.Parity`,
+  `reference/dump_t0_parity.py`).
+- Weights are Apache-2.0 but not packaged: each exceeds nuget.org's 250 MB limit.
+  `scripts/fetch-t0-checkpoint.sh` fetches pinned revisions and checks their SHA-256.
+- Not ported: autoregressive rollout past 1024 steps, quantile interpolation and tail
+  extrapolation to levels off the trained grid, and the optional symmetric averaging,
+  clipping and integer snapping.
+
+### Tsfm.Forecasting
+
+- `IQuantileForecaster`: the shared `ForecastJoint` / `Forecast` / `Quantiles` shape.
+  `TimesFmForecaster` and `T0Forecaster` implement it, so one call site drives either.
+  Additive; TimesFM behaviour is unchanged.
+
+### Samples and testing
+
+- `samples/GroceryCovariates` runs on TimesFM or t0 (`-- t0-beta`) through the interface.
+- `Tsfm.Forecasting.T0.Tests` checks structural invariants on a tiny random-init model, so
+  they run in CI without weights: a target never reads its own future, known-future rows
+  never read targets, time attention is causal, any context length is accepted. Behaviour
+  on the published checkpoints is covered too, gated on their presence.
+
 ## 0.1.3 — 2026-09-02
 
 ### Joint forecasting with known-future covariates

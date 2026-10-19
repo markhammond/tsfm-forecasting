@@ -20,3 +20,7 @@ reference/parity.safetensors
 
 # Python environment for the TimesFM parity dump.
 .venv/
+
+# t0 parity fixtures and the public datasets they are built from.
+reference/*-parity.safetensors
+reference/data/

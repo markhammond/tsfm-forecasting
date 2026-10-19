@@ -49,6 +49,11 @@ jobs:
       - name: TimesFM tests (self-skipping without weights)
         run: dotnet test tests/Tsfm.Forecasting.TimesFm.IntegrationTests -c Release --nologo
 
+      # The invariant tests run on a tiny random-init model and need no weights; the
+      # checkpoint tests self-skip, as the ~1.4 GB of t0 weights are not fetched here.
+      - name: t0 tests
+        run: dotnet test tests/Tsfm.Forecasting.T0.Tests -c Release --nologo
+
   # Packing embeds the checkpoints, so this job needs them. Platform-neutral.
   pack:
     runs-on: ubuntu-latest

@@ -7,10 +7,16 @@
 // residuals. TimesFM 3.0 instead attends over the covariates as variates, so the
 // mechanism differs and the outputs should not be expected to match.
 //
-//   dotnet run --project samples/GroceryCovariates
+// Either model runs through the same IQuantileForecaster call; only the layout differs,
+// because TimesFM reads the known future by rolling whole patches and t0 does not.
+//
+//   dotnet run --project samples/GroceryCovariates              # TimesFM 3.0
+//   dotnet run --project samples/GroceryCovariates -- t0-beta   # or t0-alpha
 
 using TorchSharp;
 
+using Tsfm.Forecasting;
+using Tsfm.Forecasting.T0;
 using Tsfm.Forecasting.TimesFm;
 
 using static TorchSharp.torch;
@@ -33,21 +39,33 @@ try { device = new Device(DeviceType.MPS); using (ones(1).to(device)) { } }
 catch { device = new Device(DeviceType.CPU); }
 
 var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../.."));
-var forecaster = TimesFmForecaster.Load(
-    Path.Combine(root, "checkpoints", "timesfm-3.0-pytorch"), device);
+var model = args.Length > 0 ? args[0] : "timesfm-3.0-pytorch";
+var checkpoint = Path.Combine(root, "checkpoints", model);
 
-// The model patches 32 steps at a time and reads the known future by rolling whole
-// patches forward, so the context must fill one patch and the horizon must sit in the
-// next. Seven days is far below that granularity: the observed week is left-padded and
-// masked to fill a patch, and the forecast week occupies the one after it.
-var patch = forecaster.Config.InputPatchLen;
-var context = patch;                       // one whole patch of context
-var total = context + patch;               // one further patch holds the horizon
-var pad = context - observed;              // left padding, masked as absent
+IQuantileForecaster forecaster;
+int context, total, pad;
+if (model.StartsWith("t0"))
+{
+    // t0 left-pads a short context onto its patch grid itself, and masks the padding.
+    forecaster = T0Forecaster.Load(checkpoint, device);
+    (context, total, pad) = (observed, observed + horizon, 0);
+    Console.WriteLine($"{model} on {device.type}: {observed} days observed, {horizon} forecast\n");
+}
+else
+{
+    // TimesFM patches 32 steps at a time and reads the known future by rolling whole
+    // patches forward, so the context must fill one patch and the horizon must sit in the
+    // next. Seven days is far below that granularity: the observed week is left-padded to
+    // fill a patch, and the forecast week occupies the one after it.
+    var timesFm = TimesFmForecaster.Load(checkpoint, device);
+    var patch = timesFm.Config.InputPatchLen;
+    (forecaster, context, total, pad) = (timesFm, patch, 2 * patch, patch - observed);
+    Console.WriteLine($"{model} on {device.type}: {observed} days observed, {horizon} forecast; "
+                      + $"padded to {context} context + {patch} horizon patch (patch length {patch})\n");
+}
 
-var quantiles = forecaster.Config.Quantiles;
-Console.WriteLine($"{device.type}: {observed} days observed, {horizon} forecast; "
-                  + $"padded to {context} context + {patch} horizon patch (patch length {patch})\n");
+var quantiles = forecaster.Quantiles;
+var (lo, mid, hi) = (Level(0.1), Level(0.5), Level(0.9));
 
 foreach (var (name, sales, promotion) in products)
 {
@@ -68,10 +86,13 @@ foreach (var (name, sales, promotion) in products)
         knownFuture: [false, true, true, true], targetVariate: 0);
 
     Console.WriteLine($"{name}  (observed: {string.Join(", ", sales)})");
-    Console.WriteLine($"  day  promo  temp    p10     p50     p90");
+    Console.WriteLine($"  day  promo  temp    p{quantiles[lo] * 100:F0}     p{quantiles[mid] * 100:F0}     p{quantiles[hi] * 100:F0}");
     for (var h = 0; h < horizon; h++)
         Console.WriteLine($"  {h + 1,3}  {(promotion[observed + h] > 0 ? "yes" : "  -"),5}"
                           + $"  {temperature[observed + h],4:F1}"
-                          + $"  {q[h, 0],6:F1}  {q[h, quantiles.Length / 2],6:F1}  {q[h, quantiles.Length - 1],6:F1}");
+                          + $"  {q[h, lo],6:F1}  {q[h, mid],6:F1}  {q[h, hi],6:F1}");
     Console.WriteLine();
 }
+
+// The column nearest a level: the grids differ (TimesFM 9, t0-alpha 5, t0-beta 21 levels).
+int Level(double level) => Enumerable.Range(0, quantiles.Count).MinBy(i => Math.Abs(quantiles[i] - level));
