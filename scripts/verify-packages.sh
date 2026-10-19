@@ -15,10 +15,19 @@ for pkg in "$DIR"/*.nupkg; do
 
   contents=$(unzip -l "$pkg")
   required_files="LICENSE README.md"
-  # Revenue-restricted weights must carry their own licence, and demand acceptance of it.
+  # Revenue-restricted weights carry their own LICENSE.txt as the package licence — and not
+  # the repository's MIT LICENSE, which does not cover them — and demand its acceptance.
   case "$name" in
     Tsfm.Forecasting.Timestral.Weights.*)
-      required_files="$required_files LICENSE-Timestral-Weights"
+      required_files="LICENSE.txt README.md"
+      if grep -qE '[[:space:]]LICENSE$' <<< "$contents"; then
+        echo "   STRAY   carries the repository's MIT LICENSE beside the weights' licence"; fail=1
+      fi
+      if unzip -p "$pkg" '*.nuspec' | grep -q '<license type="file">LICENSE.txt</license>'; then
+        echo "   ok      licence file is LICENSE.txt"
+      else
+        echo "   MISSING <license type=\"file\">LICENSE.txt</license>"; fail=1
+      fi
       if unzip -p "$pkg" '*.nuspec' | grep -q '<requireLicenseAcceptance>true'; then
         echo "   ok      requires licence acceptance"
       else

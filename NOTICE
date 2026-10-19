@@ -110,7 +110,7 @@ Tsfm.Forecasting.Timestral.Weights.5M and .28M — Mistral AI Modified MIT
 
 These packages redistribute, unmodified, the Timestral-5M and Timestral-28M weights
 published by Mistral AI. The weights are under Mistral AI's Modified MIT licence,
-reproduced verbatim in LICENSE-Timestral-Weights inside each package. It is NOT an
+reproduced verbatim in LICENSE.txt, each package's licence file. It is NOT an
 open-source licence: its condition 2 grants no rights to anyone whose company (or
 employer) had global consolidated monthly revenue above USD 20 million in the
 preceding month. Attribution notice: 2026 - Mistral AI.

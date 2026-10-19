@@ -204,7 +204,7 @@ What differs from TimesFM:
 > licence whose condition 2 withholds *every* right from anyone whose company — or
 > employer — had consolidated monthly revenue above USD 20 million in the preceding month.
 > That binds each consumer, not only whoever publishes a package. The weights packages
-> carry the licence verbatim (`LICENSE-Timestral-Weights`, and `Timestral5M.License` at
+> carry the licence verbatim (`LICENSE.txt`, the package licence, and `Timestral5M.License` at
 > run time) and require its acceptance on install. The code here is Apache-2.0 and grants
 > nothing in the weights.
 

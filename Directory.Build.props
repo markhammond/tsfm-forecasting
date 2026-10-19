@@ -40,7 +40,8 @@
     <!-- Every package carries the licence and readme from the repository root, so the
          third-party notices travel with the binaries rather than living only here. -->
     <ItemGroup Condition="'$(IsPackable)' == 'true'">
-        <None Include="$(MSBuildThisFileDirectory)LICENSE" Pack="true" PackagePath="\" Visible="false" />
+        <None Include="$(MSBuildThisFileDirectory)LICENSE" Pack="true" PackagePath="\" Visible="false"
+              Condition="'$(PackRepositoryLicense)' != 'false'" />
         <None Include="$(MSBuildThisFileDirectory)NOTICE" Pack="true" PackagePath="\" Visible="false" />
         <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
     </ItemGroup>

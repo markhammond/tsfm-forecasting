@@ -4,13 +4,16 @@
         <AssemblyName>Tsfm.Forecasting.Timestral.Weights.28M</AssemblyName>
         <RootNamespace>Tsfm.Forecasting.Timestral.Weights</RootNamespace>
         <PackageId>Tsfm.Forecasting.Timestral.Weights.28M</PackageId>
-        <Description>Timestral-28M (27.8M) weights for Tsfm.Forecasting.Timestral, embedded as assembly resources (~111 MB), redistributed unmodified from Mistral AI at the revision recorded in LICENSE-Timestral-Weights. NOT open source: Mistral's Modified MIT licence grants no rights to anyone whose company or employer exceeds USD 20M monthly revenue.</Description>
+        <Description>Timestral-28M (27.8M) weights for Tsfm.Forecasting.Timestral, embedded as assembly resources (~111 MB), redistributed unmodified from Mistral AI at the revision recorded in LICENSE.txt. NOT open source: Mistral's Modified MIT licence grants no rights to anyone whose company or employer exceeds USD 20M monthly revenue.</Description>
         <PackageTags>timestral;mistral;timeseries;forecasting;weights;model</PackageTags>
         <IsPackable>true</IsPackable>
         <!-- The weights' own licence, not an SPDX expression: it is not an OSI licence, and a
              consumer must accept it rather than inherit it unseen. -->
-        <PackageLicenseFile>LICENSE-Timestral-Weights</PackageLicenseFile>
+        <PackageLicenseFile>LICENSE.txt</PackageLicenseFile>
         <PackageRequireLicenseAcceptance>true</PackageRequireLicenseAcceptance>
+        <!-- The repository's MIT LICENSE is not packed: it does not cover the weights, and
+             LICENSE.txt carries the loader code's MIT notice itself. -->
+        <PackRepositoryLicense>false</PackRepositoryLicense>
         <!-- Checkpoints are fetched, not committed. See scripts/fetch-timestral-checkpoint.sh. -->
         <TimestralCheckpointRoot Condition="'$(TimestralCheckpointRoot)' == ''">$(MSBuildThisFileDirectory)../../checkpoints</TimestralCheckpointRoot>
         <Snapshot>$(TimestralCheckpointRoot)/Timestral-28M</Snapshot>
@@ -25,7 +28,12 @@
         <EmbeddedResource Include="$(Snapshot)/model.safetensors" LogicalName="timestral.model" />
         <EmbeddedResource Include="$(Snapshot)/config.json" LogicalName="timestral.config" />
         <EmbeddedResource Include="$(Snapshot)/LICENSE" LogicalName="timestral.license" />
-        <None Include="$(MSBuildThisFileDirectory)../../LICENSE-Timestral-Weights" Pack="true" PackagePath="\" Visible="false" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="LICENSE.txt"
+              Pack="true"
+              PackagePath="" />
     </ItemGroup>
 
     <!-- The payload is checked against the pinned revision's SHA-256 before it is embedded:
