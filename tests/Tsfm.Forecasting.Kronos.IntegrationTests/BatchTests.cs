@@ -48,6 +48,50 @@ public class BatchTests : IDisposable
         }
     }
 
+    /// <summary>Two instruments with identical bars on the same grid: the default policy
+    /// draws the same uniforms for both, PerSeries draws independently, and either way a
+    /// batched row still equals its single-series call with the same key.</summary>
+    [Fact]
+    public void SeedPolicyDecidesWhetherSeriesShareDraws()
+    {
+        var a = Synthetic(70, 100f, 0) with { SeriesKey = 11 };
+        var b = a with { SeriesKey = 22 };
+        float[] Leans(SamplingSeed seed)
+        {
+            _forecaster.Seed = seed;
+            var lean = new float[2];
+            var path = new float[2 * Horizon * 6];
+            _forecaster.InferBatch([a, b], lean, new int[2], default, path, Context, Horizon, Rollouts,
+                greedy: false, 1f, 1f);
+            return [path[3], path[Horizon * 6 + 3]];       // first step's close, each series
+        }
+
+        try
+        {
+            var common = Leans(SamplingSeeds.AnchorTime);
+            Assert.Equal(common[0], common[1]);
+
+            var independent = Leans(SamplingSeeds.PerSeries);
+            Assert.NotEqual(independent[0], independent[1]);
+
+            // Batch invariance holds under the policy: B alone, keyed 22, reproduces its row.
+            var bars = b.BarTimeMs.Length;
+            var rows = KronosForecaster.OutputCount(bars, Context);
+            var p = new float[KronosForecaster.PathLength(bars, Context, Horizon)];
+            _forecaster.InferPath(b.Ohlcva.Span, b.BarTimeMs.Span, new float[rows], new int[rows], default, p,
+                Context, Horizon, Rollouts, greedy: false, 1f, 1f, seriesKey: 22);
+            Assert.Equal(independent[1], p[p.Length - Horizon * 6 + 3]);
+
+            var salted = Leans(SamplingSeeds.Salted(SamplingSeeds.AnchorTime, 1));
+            Assert.Equal(salted[0], salted[1]);
+            Assert.NotEqual(common[0], salted[0]);
+        }
+        finally
+        {
+            _forecaster.Seed = SamplingSeeds.AnchorTime;
+        }
+    }
+
     [Fact]
     public void TooShortASeriesIsRefused()
     {

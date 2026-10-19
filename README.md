@@ -224,8 +224,12 @@ rows, and a `RolloutAggregator` reduces only across the rollouts of one series, 
 and channel — never across series. So the two compose without interaction, except in cost:
 memory scales with the product, which is why Kronos's `batch` counts windows and leaves
 rows to be `batch * rollouts`. Sampling is seeded per window from its anchor bar, so
-results do not depend on how windows were grouped into passes; the corollary is that two
-instruments anchored on the same bar draw the same uniforms (common random numbers).
+results do not depend on how windows were grouped into passes. By default two instruments
+anchored on the same bar therefore draw the same uniforms — common random numbers, which
+make cross-sectional comparisons less noisy but leave their errors correlated. That is a
+host policy, `KronosForecaster.Seed`: `SamplingSeeds.PerSeries` gives each
+`KronosSeries.SeriesKey` its own stream, and `SamplingSeeds.Salted` derives a fresh,
+reproducible run from either.
 TimesFM and t0 emit quantiles directly, with no rollouts and nothing to aggregate. t0's
 upstream continuation past 1024 steps (not ported) would be the same pattern again: each
 requested quantile becomes a path, paths are folded into the batch as extra groups, and

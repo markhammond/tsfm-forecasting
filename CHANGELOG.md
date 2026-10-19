@@ -42,6 +42,12 @@
   `batch × rollouts` rows; row `i` equals the last row `InferPath` gives for series `i`
   alone, sampling included. `Infer` and `InferPath` share the refactored loop and are
   bit-identical to 0.1.3.
+- `KronosForecaster.Seed` makes the sampling seed a host policy over the anchor bar and a
+  series key (`KronosSeries.SeriesKey`, or `seriesKey:` on `Infer`/`InferPath`).
+  `SamplingSeeds.AnchorTime`, the default, is the 0.1.x behaviour: series anchored on one bar
+  share draws (common random numbers). `PerSeries` gives each key its own stream, and
+  `Salted` derives a fresh reproducible run from any policy. Batch invariance holds under
+  all of them; the default is bit-identical to 0.1.3.
 
 ### Packaging
 
