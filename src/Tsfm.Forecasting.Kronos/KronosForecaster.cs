@@ -22,6 +22,14 @@ public sealed class KronosForecaster : IDisposable
     private readonly KronosModel _model;
     private readonly Device _device;
 
+    /// <summary>
+    /// Seeds each window's sampling stream from its anchor bar and series key. The default,
+    /// <see cref="SamplingSeeds.AnchorTime"/>, ignores the key: every series anchored on a
+    /// bar draws the same uniforms. See <see cref="SamplingSeeds"/> for the alternatives.
+    /// Whatever the policy, a window's draws never depend on how windows were batched.
+    /// </summary>
+    public SamplingSeed Seed { get; set; } = SamplingSeeds.AnchorTime;
+
     /// <summary>Rows this slice produces, <c>L − K + 1</c>. Size buffers from this; a
     /// wrong count misaligns every row.</summary>
     /// <summary>
@@ -98,15 +106,18 @@ public sealed class KronosForecaster : IDisposable
     /// <param name="temperature">Logit temperature before sampling.</param>
     /// <param name="topP">Nucleus cutoff.</param>
     /// <param name="batch">Windows per forward pass.</param>
+    /// <param name="seriesKey">Identifies the series to <see cref="Seed"/>. The default policy
+    /// ignores it; <see cref="SamplingSeeds.PerSeries"/> needs a distinct, stable key per
+    /// instrument — a symbol hash, say.</param>
     /// <returns><c>L − K + 1</c> rows, the last anchored on the final bar. Forward
     /// timestamps are extrapolated from the bar interval, so no trailing bars are consumed.</returns>
     /// <remarks>Not thread safe.</remarks>
     public bool Infer(ReadOnlySpan<float> ohlcva, ReadOnlySpan<long> barTimeMs,
         Span<float> lean, Span<int> upCount, Span<float> dispersion,
         int contextBars, int horizon, int rollouts, bool greedy,
-        float temperature, float topP, int batch = 8)
+        float temperature, float topP, int batch = 8, long seriesKey = 0)
         => InferCore(ohlcva, barTimeMs, lean, upCount, dispersion, default, null,
-            contextBars, horizon, rollouts, greedy, temperature, topP, batch);
+            contextBars, horizon, rollouts, greedy, temperature, topP, batch, seriesKey);
 
     // CS1573 does not expand <inheritdoc>, though the IDE does, so the shared parameters
     // would have to be duplicated from Infer to satisfy a check the tooltips already pass.
@@ -140,27 +151,88 @@ public sealed class KronosForecaster : IDisposable
     public bool InferPath(ReadOnlySpan<float> ohlcva, ReadOnlySpan<long> barTimeMs,
         Span<float> lean, Span<int> upCount, Span<float> dispersion, Span<float> path,
         int contextBars, int horizon, int rollouts, bool greedy,
-        float temperature, float topP, RolloutAggregator? aggregate = null, int batch = 8)
+        float temperature, float topP, RolloutAggregator? aggregate = null, int batch = 8, long seriesKey = 0)
         => InferCore(ohlcva, barTimeMs, lean, upCount, dispersion, path,
             aggregate ?? RolloutAggregators.Mean,
-            contextBars, horizon, rollouts, greedy, temperature, topP, batch);
+            contextBars, horizon, rollouts, greedy, temperature, topP, batch, seriesKey);
 #pragma warning restore CS1573
 
     /// <summary>Elements <see cref="InferPath"/> writes: <c>(L - K + 1) * horizon * Channels</c>.</summary>
     public static int PathLength(int barCount, int contextBars, int horizon)
         => OutputCount(barCount, contextBars) * horizon * Channels;
 
+#pragma warning disable CS1573
+    /// <inheritdoc cref="InferPath"/>
+    /// <summary>
+    /// One forecast per series, anchored on each series' final bar — instruments at the
+    /// latest bar, say — batched across series rather than along one. Row <c>i</c> equals
+    /// the last row <see cref="InferPath"/> would produce for <c>series[i]</c> alone.
+    ///
+    /// <para>Rollouts and series share the forward pass: <paramref name="batch"/> series of
+    /// <paramref name="rollouts"/> each make <c>batch * rollouts</c> rows. Each output reduces
+    /// only its own series' rollouts.</para>
+    ///
+    /// <para>Sampling is seeded by <see cref="Seed"/>. Under the default, the anchor bar's
+    /// timestamp alone, series anchored on the same bar draw the same uniforms — common
+    /// random numbers: comparisons across instruments are less noisy, but their sampling
+    /// errors are correlated. <see cref="SamplingSeeds.PerSeries"/> with distinct
+    /// <see cref="KronosSeries.SeriesKey"/>s makes them independent.</para>
+    /// </summary>
+    /// <param name="series">Each with at least <paramref name="contextBars"/> bars.</param>
+    /// <param name="lean">One row per series.</param>
+    /// <param name="upCount">One row per series.</param>
+    /// <param name="dispersion">One row per series, or empty.</param>
+    /// <param name="path">Receives <c>series x horizon x 6</c>, or may be empty.</param>
+    /// <param name="aggregate">Reduces each channel's rollouts at each step; null is the
+    /// mean. Only applied when <paramref name="path"/> is requested.</param>
+    /// <param name="batch">Series per forward pass.</param>
+    public void InferBatch(ReadOnlySpan<KronosSeries> series,
+        Span<float> lean, Span<int> upCount, Span<float> dispersion, Span<float> path,
+        int contextBars, int horizon, int rollouts, bool greedy,
+        float temperature, float topP, RolloutAggregator? aggregate = null, int batch = 8)
+    {
+        for (var i = 0; i < series.Length; i++)
+        {
+            var (o, t) = (series[i].Ohlcva.Length, series[i].BarTimeMs.Length);
+            if (o != t * Channels)
+                throw new ArgumentException($"series[{i}]: ohlcva must be L x 6 for its {t} bars", nameof(series));
+            if (t < contextBars)
+                throw new ArgumentException(
+                    $"series[{i}]: {t} bars cannot fill a context of {contextBars}", nameof(series));
+        }
+        Drive(new Windows(series, contextBars), series.Length, lean, upCount, dispersion, path,
+            path.IsEmpty ? null : aggregate ?? RolloutAggregators.Mean,
+            contextBars, horizon, rollouts, greedy, temperature, topP, batch);
+    }
+#pragma warning restore CS1573
+
     private bool InferCore(ReadOnlySpan<float> ohlcva, ReadOnlySpan<long> barTimeMs,
         Span<float> lean, Span<int> upCount, Span<float> dispersion, Span<float> path,
         RolloutAggregator? aggregate,
         int contextBars, int horizon, int rollouts, bool greedy,
-        float temperature, float topP, int batch = 8)
+        float temperature, float topP, int batch, long seriesKey)
     {
-        var k = contextBars;
-        var h = horizon;
         var length = barTimeMs.Length;
         if (ohlcva.Length != length * Channels)
             throw new ArgumentException("ohlcva must be L x 6", nameof(ohlcva));
+
+        var count = OutputCount(length, contextBars);
+        if (contextBars <= MaxContext && count <= 0) return false;
+        Drive(new Windows(ohlcva, barTimeMs, contextBars, seriesKey), count, lean, upCount, dispersion, path, aggregate,
+            contextBars, horizon, rollouts, greedy, temperature, topP, batch);
+        return true;
+    }
+
+    /// <summary>Evaluate <paramref name="count"/> windows, <paramref name="batch"/> per
+    /// forward pass, writing output row <c>i</c> for window <c>i</c>.</summary>
+    private void Drive(in Windows source, int count,
+        Span<float> lean, Span<int> upCount, Span<float> dispersion, Span<float> path,
+        RolloutAggregator? aggregate,
+        int contextBars, int horizon, int rollouts, bool greedy,
+        float temperature, float topP, int batch)
+    {
+        var k = contextBars;
+        var h = horizon;
 
         // Upstream truncates silently, which reads as a working call that quietly ignored
         // the bars beyond the limit. Refuse instead, and say what the limit is.
@@ -168,11 +240,9 @@ public sealed class KronosForecaster : IDisposable
             throw new ArgumentOutOfRangeException(nameof(contextBars),
                 $"{CheckpointName} attends over at most {MaxContext} bars; got {k}.");
 
-        var count = OutputCount(length, k);
-        if (count <= 0) return false;
         if (lean.Length != count || upCount.Length != count)
             throw new ArgumentException(
-                $"lean and upCount must each hold exactly {count} rows (= L - K + 1); " +
+                $"lean and upCount must each hold exactly {count} rows; " +
                 $"got {lean.Length}/{upCount.Length}. Use {nameof(OutputCount)}.");
 
         // Dispersion is diagnostic. An empty span skips the standard deviation entirely.
@@ -189,8 +259,8 @@ public sealed class KronosForecaster : IDisposable
         if (!dispersion.IsEmpty) dispersion.Fill(float.NaN);
         if (!path.IsEmpty) path.Fill(float.NaN);
         upCount.Clear();
+        if (count == 0) return;
 
-        var stamps = ArrayPool<float>.Shared.Rent(length * 5);
         // Size scratch for a full batch and reuse it across the slice; per-batch
         // allocation dominates a materialisation-sized run.
         var maxRows = batch * rollouts;
@@ -206,24 +276,19 @@ public sealed class KronosForecaster : IDisposable
 
         try
         {
-            BuildStamps(barTimeMs, stamps.AsSpan(0, length * 5));
-            var stepMs = length > 1 ? barTimeMs[1] - barTimeMs[0] : 0L;
-
             using var _ = no_grad();
             for (var start = 0; start < count; start += batch)
             {
                 var take = Math.Min(batch, count - start);
-                EvaluateBatch(ohlcva, barTimeMs, stamps.AsSpan(0, length * 5), stepMs, start, take,
+                EvaluateBatch(source, start, take,
                     k, h, rollouts, greedy, temperature, topP,
                     lean, upCount, dispersion, path, aggregate,
                     samples.AsSpan(0, rollouts), per.AsSpan(0, rollouts),
                     x, stamp, mean, scale, anchor, uniforms, pick);
             }
-            return true;
         }
         finally
         {
-            ArrayPool<float>.Shared.Return(stamps);
             ArrayPool<float>.Shared.Return(x);
             ArrayPool<float>.Shared.Return(stamp);
             ArrayPool<float>.Shared.Return(mean);
@@ -236,9 +301,53 @@ public sealed class KronosForecaster : IDisposable
         }
     }
 
+    /// <summary>
+    /// Where window <c>i</c> lives: either the <c>i</c>-th sliding window along one series,
+    /// or the final window of the <c>i</c>-th of many. Either way it reads K bars from
+    /// <see cref="Origin"/> of <see cref="Ohlcva"/>, anchored on the last of them.
+    /// </summary>
+    private readonly ref struct Windows
+    {
+        private readonly ReadOnlySpan<float> _ohlcva;
+        private readonly ReadOnlySpan<long> _times;
+        private readonly ReadOnlySpan<KronosSeries> _series;
+        private readonly int _k;
+        private readonly bool _many;
+        private readonly long _key;
+
+        public Windows(ReadOnlySpan<float> ohlcva, ReadOnlySpan<long> times, int k, long key)
+        {
+            _ohlcva = ohlcva;
+            _times = times;
+            _k = k;
+            _key = key;
+        }
+
+        public Windows(ReadOnlySpan<KronosSeries> series, int k)
+        {
+            _series = series;
+            _k = k;
+            _many = true;
+        }
+
+        public ReadOnlySpan<float> Ohlcva(int i) => _many ? _series[i].Ohlcva.Span : _ohlcva;
+
+        public ReadOnlySpan<long> Times(int i) => _many ? _series[i].BarTimeMs.Span : _times;
+
+        public int Origin(int i) => _many ? _series[i].BarTimeMs.Length - _k : i;
+
+        /// <summary>Bar interval, from the series' first spacing.</summary>
+        public long SeriesKey(int i) => _many ? _series[i].SeriesKey : _key;
+
+        public long StepMs(int i)
+        {
+            var t = Times(i);
+            return t.Length > 1 ? t[1] - t[0] : 0L;
+        }
+    }
+
     private void EvaluateBatch(
-        ReadOnlySpan<float> ohlcva, ReadOnlySpan<long> barTimeMs, ReadOnlySpan<float> stamps, long stepMs,
-        int start, int take, int k, int h, int rollouts, bool greedy, float temperature, float topP,
+        in Windows source, int start, int take, int k, int h, int rollouts, bool greedy, float temperature, float topP,
         Span<float> lean, Span<int> upCount, Span<float> dispersion,
         Span<float> path, RolloutAggregator? aggregate, Span<float> samples, Span<double> per,
         float[] x, float[] stamp, float[] mean, float[] scale, float[] anchor,
@@ -251,9 +360,19 @@ public sealed class KronosForecaster : IDisposable
         // the model reads.
         for (var w = 0; w < take; w++)
         {
-            var origin = start + w;
+            var ohlcva = source.Ohlcva(start + w);
+            var times = source.Times(start + w);
+            var origin = source.Origin(start + w);
+            var stepMs = source.StepMs(start + w);
             NormaliseWindow(ohlcva, origin, k, mean.AsSpan(w * Channels, Channels), scale.AsSpan(w * Channels, Channels));
             anchor[w] = ohlcva[(origin + k - 1) * Channels + 3];               // close of the anchor bar
+
+            // Calendar stamps for the window and its extrapolated horizon, written once and
+            // shared by every rollout.
+            var first = stamp.AsSpan(w * rollouts * (k + h) * 5, (k + h) * 5);
+            for (var t = 0; t < k; t++) WriteStamp(first, t, times[origin + t]);
+            for (var j = 0; j < h; j++)                                  // forward stamps: extrapolated
+                WriteStamp(first, k + j, times[origin + k - 1] + stepMs * (j + 1));
 
             for (var r = 0; r < rollouts; r++)
             {
@@ -264,9 +383,7 @@ public sealed class KronosForecaster : IDisposable
                     var v = (ohlcva[(origin + t) * Channels + c] - mean[w * Channels + c]) / (scale[w * Channels + c] + 1e-5f);
                     x[(row * k + t) * Channels + c] = Math.Clamp(v, -5f, 5f);
                 }
-                stamps.Slice(origin * 5, k * 5).CopyTo(stamp.AsSpan(row * (k + h) * 5, k * 5));
-                for (var j = 0; j < h; j++)                              // forward stamps: extrapolated
-                    WriteStamp(stamp, row * (k + h) + k + j, barTimeMs[origin + k - 1] + stepMs * (j + 1));
+                if (r > 0) first.CopyTo(stamp.AsSpan(row * (k + h) * 5, (k + h) * 5));
             }
         }
 
@@ -281,8 +398,7 @@ public sealed class KronosForecaster : IDisposable
 
         // Draw before the loop: sampling must be a pure function of the bar, not of how
         // windows were batched.
-        if (!greedy) DrawUniforms(barTimeMs, start, take, k, rollouts, h, uniforms);
-
+        if (!greedy) DrawUniforms(source, Seed, start, take, k, rollouts, h, uniforms);
         for (var step = 0; step < h; step++)
         {
             var len = k + step;
@@ -377,12 +493,13 @@ public sealed class KronosForecaster : IDisposable
     /// window's anchor bar. SplitMix64, so the stream cannot shift with a framework
     /// version.</summary>
     private static void DrawUniforms(
-        ReadOnlySpan<long> barTimeMs, int start, int take, int k, int rollouts, int h, float[] u)
+        in Windows source, SamplingSeed seed, int start, int take, int k, int rollouts, int h, float[] u)
     {
         var perWindow = rollouts * h * 2;
         for (var w = 0; w < take; w++)
         {
-            var state = (ulong)SeedFor(barTimeMs[start + w + k - 1]);
+            var anchorMs = source.Times(start + w)[source.Origin(start + w) + k - 1];
+            var state = (ulong)seed(anchorMs, source.SeriesKey(start + w));
             for (var i = 0; i < perWindow; i++)
             {
                 state += 0x9E3779B97F4A7C15UL;
@@ -432,11 +549,6 @@ public sealed class KronosForecaster : IDisposable
     /// <summary>Calendar features: minute, hour, weekday, day-of-month, month.
     /// <b>Weekday is Monday-zero</b>, as pandas. <see cref="DayOfWeek"/> is Sunday-zero;
     /// using it directly shifts every weekday embedding by one, silently.</summary>
-    private static void BuildStamps(ReadOnlySpan<long> barTimeMs, Span<float> stamps)
-    {
-        for (var i = 0; i < barTimeMs.Length; i++) WriteStamp(stamps, i, barTimeMs[i]);
-    }
-
     public static void WriteStamp(Span<float> dst, int row, long unixMs)
     {
         var t = DateTimeOffset.FromUnixTimeMilliseconds(unixMs).UtcDateTime;
@@ -469,5 +581,54 @@ public sealed class KronosForecaster : IDisposable
     {
         _tokenizer.Dispose();
         _model.Dispose();
+    }
+}
+
+/// <summary>One series for <see cref="KronosForecaster.InferBatch"/>: row-major
+/// <c>[L x 6]</c> bars and their close times. Memory rather than spans so series can sit in
+/// an array; slicing a larger buffer copies nothing.</summary>
+/// <param name="Ohlcva">Row-major <c>[L x 6]</c>: open, high, low, close, volume, amount.</param>
+/// <param name="BarTimeMs">Close time per bar, Unix milliseconds, <c>[L]</c>.</param>
+/// <param name="SeriesKey">Identifies the series to <see cref="KronosForecaster.Seed"/>;
+/// ignored by the default policy. Keep it stable across calls — a symbol hash, not a batch
+/// index — or a series' draws change with the company it is batched in.</param>
+public readonly record struct KronosSeries(ReadOnlyMemory<float> Ohlcva, ReadOnlyMemory<long> BarTimeMs, long SeriesKey = 0);
+
+/// <summary>A sampling seed for one window, from its anchor bar's close time and its
+/// series key. Must be a pure function: draws are reproduced from it.</summary>
+public delegate long SamplingSeed(long anchorCloseTimeMs, long seriesKey);
+
+/// <summary>
+/// Seeding policies for <see cref="KronosForecaster.Seed"/>.
+///
+/// <para>The choice is between common and independent random numbers across series. Common
+/// ones (the default) make a cross-sectional comparison — ranking instruments by P(up), say
+/// — less noisy, because every instrument's sampling error moves together; but for the same
+/// reason an average over instruments does not shrink that error. Independent ones behave as
+/// separate experiments.</para>
+/// </summary>
+public static class SamplingSeeds
+{
+    /// <summary>The anchor bar alone, ignoring the series: series anchored on one bar share
+    /// draws. The behaviour of 0.1.x and the default.</summary>
+    public static readonly SamplingSeed AnchorTime = (anchorMs, _) => KronosForecaster.SeedFor(anchorMs);
+
+    /// <summary>The anchor bar mixed with the series key: independent streams for distinct
+    /// keys, and the same stream for the same series and bar on every call.</summary>
+    public static readonly SamplingSeed PerSeries = (anchorMs, key) => Mix(KronosForecaster.SeedFor(anchorMs), key);
+
+    /// <summary><paramref name="inner"/> mixed with a run-level salt: a fresh, still
+    /// reproducible, set of draws per salt — for independent replications of a whole run.</summary>
+    public static SamplingSeed Salted(SamplingSeed inner, long salt) => (anchorMs, key) => Mix(inner(anchorMs, key), salt);
+
+    /// <summary>SplitMix64's finaliser over the pair, kept non-negative like
+    /// <see cref="KronosForecaster.SeedFor"/>.</summary>
+    private static long Mix(long seed, long key)
+    {
+        var z = (ulong)seed ^ ((ulong)key * 0x9E3779B97F4A7C15UL);
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9UL;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EBUL;
+        z ^= z >> 31;
+        return (long)(z & 0x7FFFFFFFFFFFFFFFUL);
     }
 }

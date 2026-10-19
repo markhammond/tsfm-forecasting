@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <IsPackable>true</IsPackable>
+        <PackageId>Tsfm.Forecasting.T0</PackageId>
+        <AssemblyName>Tsfm.Forecasting.T0</AssemblyName>
+        <RootNamespace>Tsfm.Forecasting.T0</RootNamespace>
+        <!-- Apache-2.0, not MIT: this port derives from theforecastingcompany/tfc-t0, which is
+             Apache-2.0 and itself carries Datadog (Toto) and Amazon (Chronos-2) attributions.
+             See NOTICE. -->
+        <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+        <Description>Native .NET inference for The Forecasting Company's t0 family (t0-alpha, t0-beta): a decoder-style patch transformer with time and variate attention and known-future covariates. Weights are Apache-2.0 but not bundled; fetch them from Hugging Face.</Description>
+        <PackageTags>timeseries;forecasting;foundation-model;t0;covariates;quantile;torchsharp</PackageTags>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Tsfm.Forecasting\Tsfm.Forecasting.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="..\..\LICENSE-Apache-2.0" Pack="true" PackagePath="\" Visible="false" />
+    </ItemGroup>
+
+</Project>

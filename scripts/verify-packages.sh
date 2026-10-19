@@ -14,7 +14,27 @@ for pkg in "$DIR"/*.nupkg; do
   echo "── $name (${size} MB)"
 
   contents=$(unzip -l "$pkg")
-  for required in LICENSE README.md; do
+  required_files="LICENSE README.md"
+  # Revenue-restricted weights carry their own LICENSE.txt as the package licence — and not
+  # the repository's MIT LICENSE, which does not cover them — and demand its acceptance.
+  case "$name" in
+    Tsfm.Forecasting.Timestral.Weights.*)
+      required_files="LICENSE.txt README.md"
+      if grep -qE '[[:space:]]LICENSE$' <<< "$contents"; then
+        echo "   STRAY   carries the repository's MIT LICENSE beside the weights' licence"; fail=1
+      fi
+      if unzip -p "$pkg" '*.nuspec' | grep -q '<license type="file">LICENSE.txt</license>'; then
+        echo "   ok      licence file is LICENSE.txt"
+      else
+        echo "   MISSING <license type=\"file\">LICENSE.txt</license>"; fail=1
+      fi
+      if unzip -p "$pkg" '*.nuspec' | grep -q '<requireLicenseAcceptance>true'; then
+        echo "   ok      requires licence acceptance"
+      else
+        echo "   MISSING requireLicenseAcceptance"; fail=1
+      fi ;;
+  esac
+  for required in $required_files; do
     if grep -q "$required" <<< "$contents"; then
       echo "   ok      carries $required"
     else
@@ -30,7 +50,7 @@ for pkg in "$DIR"/*.nupkg; do
   # A weights package with no embedded payload builds and publishes cleanly, then fails
   # at load for every consumer — worth an explicit check.
   case "$name" in
-    Tsfm.Forecasting.Kronos.Weights.*)
+    Tsfm.Forecasting.Kronos.Weights.*|Tsfm.Forecasting.Timestral.Weights.*)
       if [ "$size" -lt 10 ]; then
         echo "   EMPTY   weights package is only ${size} MB; the checkpoint did not embed"; fail=1
       else

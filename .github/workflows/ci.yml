@@ -43,11 +43,20 @@ jobs:
       - name: Test
         run: dotnet test tests/Tsfm.Forecasting.Kronos.Tests -c Release --nologo --no-build
 
-      # Vacuous here by design: the TimesFM checkpoint is ~1.2 GB and non-commercially
-      # licensed, so it is never fetched on a runner. Running them anyway proves they
-      # compile and start; the assertions only bite on a developer machine.
-      - name: TimesFM tests (self-skipping without weights)
+      # The checkpoint tests are vacuous here by design: the TimesFM checkpoint is ~1.2 GB
+      # and non-commercially licensed, so it is never fetched on a runner. The batch tests
+      # run on a random-init model and do bite.
+      - name: TimesFM tests (checkpoint tests self-skip)
         run: dotnet test tests/Tsfm.Forecasting.TimesFm.IntegrationTests -c Release --nologo
+
+      # The invariant tests run on a tiny random-init model and need no weights; the
+      # checkpoint tests self-skip, as the ~1.4 GB of t0 weights are not fetched here.
+      - name: t0 tests
+        run: dotnet test tests/Tsfm.Forecasting.T0.Tests -c Release --nologo
+
+      # Random-init model, no weights needed.
+      - name: Timestral tests
+        run: dotnet test tests/Tsfm.Forecasting.Timestral.Tests -c Release --nologo
 
   # Packing embeds the checkpoints, so this job needs them. Platform-neutral.
   pack:
@@ -66,15 +75,17 @@ jobs:
           key: nuget-pack-${{ hashFiles('**/*.csproj', 'Directory.Build.props') }}
           restore-keys: nuget-pack-
 
-      # Key on the fetch script: revisions are pinned there and change deliberately.
+      # Key on the fetch scripts: revisions are pinned there and change deliberately.
       - name: Cache checkpoints
         uses: actions/cache@v4
         with:
           path: checkpoints
-          key: checkpoints-${{ hashFiles('scripts/fetch-checkpoints.sh') }}
+          key: checkpoints-${{ hashFiles('scripts/fetch-checkpoints.sh', 'scripts/fetch-timestral-checkpoint.sh') }}
 
       - name: Fetch checkpoints
-        run: ./scripts/fetch-checkpoints.sh
+        run: |
+          ./scripts/fetch-checkpoints.sh
+          ./scripts/fetch-timestral-checkpoint.sh       # 5M and 28M, the embedded pair (~132 MB)
 
       - name: Pack
         run: dotnet pack -c Release --nologo -o artifacts
@@ -82,7 +93,9 @@ jobs:
       # Weights-backed, so they belong here rather than in the fast matrix, which fetches
       # no checkpoints. The example is built to prove it still compiles against the API.
       - name: Integration tests
-        run: dotnet test tests/Tsfm.Forecasting.Kronos.IntegrationTests -c Release --nologo
+        run: |
+          dotnet test tests/Tsfm.Forecasting.Kronos.IntegrationTests -c Release --nologo
+          dotnet test tests/Tsfm.Forecasting.Timestral.IntegrationTests -c Release --nologo
 
       - name: Build samples
         run: |

@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <IsPackable>true</IsPackable>
+        <PackageId>Tsfm.Forecasting.Timestral</PackageId>
+        <AssemblyName>Tsfm.Forecasting.Timestral</AssemblyName>
+        <RootNamespace>Tsfm.Forecasting.Timestral</RootNamespace>
+        <!-- Apache-2.0, not MIT: this port derives from mistralai/timestral, which is
+             Apache-2.0. The WEIGHTS are under a different, revenue-restricted licence and
+             ship separately; see NOTICE. -->
+        <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+        <Description>Native .NET inference for Mistral AI's Timestral family (5M, 28M, 123M, 209M): a patch transformer with time and variate attention, past and known-future covariates and 21 quantiles. Code only. Weights are under Mistral's Modified MIT licence, which withholds all rights from companies above USD 20M monthly revenue: 5M and 28M ship in Tsfm.Forecasting.Timestral.Weights.*, the larger two are fetched.</Description>
+        <PackageTags>timeseries;forecasting;foundation-model;timestral;mistral;covariates;quantile;torchsharp</PackageTags>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Tsfm.Forecasting\Tsfm.Forecasting.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="..\..\LICENSE-Apache-2.0" Pack="true" PackagePath="\" Visible="false" />
+    </ItemGroup>
+
+</Project>

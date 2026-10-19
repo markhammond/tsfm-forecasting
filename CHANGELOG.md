@@ -1,5 +1,101 @@
 # Changelog
 
+## 0.2.0
+
+### Tsfm.Forecasting.T0 (Apache-2.0) — new
+
+- Inference for The Forecasting Company's **t0-alpha** (102M) and **t0-beta** (256M), ported
+  from `tfc-t0` 0.6.0: causal scaler, patch encoder, alternating time/group transformer
+  with xPos rotary embedding, residual decoder, monotone quantile head.
+- `T0Forecaster` takes the TimesFM shape: `ForecastJoint` over variate-major series with
+  known-future flags and a target index, and `Forecast` over OHLCVA for forward returns.
+  Unlike TimesFM, any context length is accepted (left-padded onto the patch grid and
+  masked), and up to 1024 steps are decoded in one pass.
+- Each checkpoint's scaler convention is read from its `config.json`. t0-beta's differs
+  from alpha's, and running it under alpha's loads cleanly and forecasts worse.
+- Verified stage by stage against the reference, both checkpoints, including the
+  quickstart notebook's electricity-price and M4 examples (`tests/Tsfm.Forecasting.T0.Parity`,
+  `reference/dump_t0_parity.py`).
+- Weights are Apache-2.0 but not packaged: each exceeds nuget.org's 250 MB limit.
+  `scripts/fetch-t0-checkpoint.sh` fetches pinned revisions and checks their SHA-256.
+- Not ported: autoregressive rollout past 1024 steps, quantile interpolation and tail
+  extrapolation to levels off the trained grid, and the optional symmetric averaging,
+  clipping and integer snapping.
+
+- Weights are not bundled. The README gives pinned download commands with checksums for
+  projects that only reference the package, and `Load` names them when files are missing.
+
+### Tsfm.Forecasting.Timestral (Apache-2.0) — new
+
+- Inference for Mistral AI's Timestral family — 5M, 28M, 123M, 209M — ported from
+  `mistralai/timestral` 1.0.0: causal per-patch scaler, gated time/variate transformer with
+  partial RoPE, Decoupled Horizon Forecasting decoder tokens, monotone 21-quantile head.
+- `TimestralForecaster` takes the shared shape (`ForecastJoint`, `Forecast`, both batches)
+  and applies the reference forecaster's defaults — symmetric averaging, non-negative
+  clipping, advancing refine frame, quantile cap — so published numbers are reproduced.
+  The mirrored input of symmetric averaging rides in the same forward pass.
+- Verified stage by stage against the reference on all four sizes, with and without the
+  defaults, including the covariate path and the shared notebook examples. Faster than the
+  reference on CPU at every size.
+- Context up to 32,768 steps, refused beyond; up to 1,024 steps forecast per pass.
+
+### Tsfm.Forecasting.Timestral.Weights.5M and .28M (Mistral Modified MIT) — new
+
+- Timestral-5M (21 MB) and -28M (111 MB) embedded at pinned revisions; the build checks
+  each payload's SHA-256 and refuses one that differs.
+- **Revenue-restricted, not open source**: the licence withholds all rights from companies
+  above USD 20M monthly revenue. It ships verbatim as the package licence file, is
+  readable at run time (`Timestral5M.License`), and must be accepted on install.
+- 123M and 209M are fetched by `scripts/fetch-timestral-checkpoint.sh`, not packaged.
+
+### Tsfm.Forecasting
+
+- `IModelWeights`, `DirectoryWeights`, `EmbeddedWeights`: a tokenizer-free checkpoint
+  abstraction beside `ICheckpoint`, used by the Timestral weights packages.
+
+### Batching, across all the models
+
+- `IQuantileForecaster` (new, in `Tsfm.Forecasting`): the shared `ForecastJoint` /
+  `Forecast` / `Quantiles` shape, plus `ForecastJointBatch` and `ForecastBatch` over many
+  entries sharing a horizon, written `[entry][step][quantile]` into a caller-sized span
+  (`BatchOutputLength`). Entries are `JointSeries` / `ReadOnlyMemory<float>`, so anchors
+  sliced from one history copy nothing. `TimesFmForecaster` and `T0Forecaster` implement it.
+- t0 batches any entries in one pass — differing variates, contexts and known-future
+  patterns — each its own attention group, shorter contexts left-padded and masked. Entries
+  are ordered by context before being cut into passes of `MaxRowsPerPass` series. Verified
+  against the reference in the parity harness.
+- TimesFM stacks entries of one shape on the model's batch axis, `MaxBatchPerPass` at a
+  time. The single calls now run as a batch of one; outputs are bit-identical to 0.1.3.
+- `KronosForecaster.InferBatch` forecasts the final window of many series in one pass of
+  `batch × rollouts` rows; row `i` equals the last row `InferPath` gives for series `i`
+  alone, sampling included. `Infer` and `InferPath` share the refactored loop and are
+  bit-identical to 0.1.3.
+- `KronosForecaster.Seed` makes the sampling seed a host policy over the anchor bar and a
+  series key (`KronosSeries.SeriesKey`, or `seriesKey:` on `Infer`/`InferPath`).
+  `SamplingSeeds.AnchorTime`, the default, is the 0.1.x behaviour: series anchored on one bar
+  share draws (common random numbers). `PerSeries` gives each key its own stream, and
+  `Salted` derives a fresh reproducible run from any policy. Batch invariance holds under
+  all of them; the default is bit-identical to 0.1.3.
+
+### Packaging
+
+`scripts/pack.sh` builds the whole set in one command — fetch, pack, verify — and prints
+the order to upload in by hand.
+
+All packages move to 0.2.0: the core gains the interface the model packages implement,
+and a project reference packs an exact-version dependency.
+
+### Samples and testing
+
+- `samples/GroceryCovariates` runs on TimesFM, t0 or Timestral (`-- t0-beta`,
+  `-- Timestral-28M`) through the interface.
+- Batch tests for TimesFM and t0 run on small random-init models, so they bite in CI
+  without weights; Kronos's run with the integration tests.
+- `Tsfm.Forecasting.T0.Tests` checks structural invariants on a tiny random-init model, so
+  they run in CI without weights: a target never reads its own future, known-future rows
+  never read targets, time attention is causal, any context length is accepted. Behaviour
+  on the published checkpoints is covered too, gated on their presence.
+
 ## 0.1.3 — 2026-09-02
 
 ### Joint forecasting with known-future covariates
