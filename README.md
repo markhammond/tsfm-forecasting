@@ -1,8 +1,9 @@
 # Tsfm.Forecasting
 
 Probabilistic forecasting with native .NET inference for time-series foundation models, on CPU or GPU via
-TorchSharp. Currently [Kronos](https://github.com/shiyu-coder/Kronos), [TimesFM 3.0](https://github.com/google-research/timesfm)
-and [t0](https://huggingface.co/theforecastingcompany/t0-beta) (t0-alpha, t0-beta).
+TorchSharp. Currently [Kronos](https://github.com/shiyu-coder/Kronos), [TimesFM 3.0](https://github.com/google-research/timesfm),
+[t0](https://huggingface.co/theforecastingcompany/t0-beta) (t0-alpha, t0-beta)
+and [Timestral](https://huggingface.co/collections/mistralai/timestral) (5M, 28M, 123M, 209M).
 
 [![ci](https://github.com/markhammond/tsfm-forecasting/actions/workflows/ci.yml/badge.svg)](https://github.com/markhammond/tsfm-forecasting/actions/workflows/ci.yml)
 
