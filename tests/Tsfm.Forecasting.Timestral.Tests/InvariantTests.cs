@@ -11,6 +11,14 @@ namespace Tsfm.Forecasting.Timestral.Tests;
 /// </summary>
 public class InvariantTests
 {
+    /// <summary>Equal to float32 rounding: a few ulps of the value, or of 1 near zero.
+    /// Not bit for bit — a matmul over more rows need not reproduce one over fewer, and
+    /// runners differ in which BLAS kernels they take. Nor rounded to fixed decimals, which
+    /// fails whenever two equal-to-rounding values straddle a rounding boundary.</summary>
+    private static void Close(double expected, double actual, double rel = 1e-5)
+        => Assert.True(Math.Abs(expected - actual) <= rel * Math.Max(1.0, Math.Abs(expected)),
+            $"expected {expected:R}, got {actual:R}");
+
     internal static readonly TimestralConfig Tiny = new(
         PatchSize: 8, DModel: 32, NumHeads: 4, MlpHiddenDim: 64,
         BlockSchedule: ["time", "time_variate", "time", "time_variate"],
@@ -99,7 +107,7 @@ public class InvariantTests
         var q = a.GetLength(1);
         for (var h = 0; h < Horizon; h++)
         for (var k = 0; k < q; k++)
-            Assert.Equal(a[h, k], -b[h, q - 1 - k], 4);
+            Close(a[h, k], -b[h, q - 1 - k]);
     }
 
     [Fact]

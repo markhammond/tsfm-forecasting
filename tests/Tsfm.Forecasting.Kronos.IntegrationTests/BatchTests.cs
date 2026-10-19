@@ -8,11 +8,20 @@ namespace Tsfm.Forecasting.Kronos.IntegrationTests;
 
 /// <summary>
 /// <see cref="KronosForecaster.InferBatch"/> against the single-series path it batches.
-/// Sampling is seeded by each window's anchor bar, so a sampled batch must reproduce the
-/// single-series rows exactly, not merely in distribution.
+/// Sampling is seeded by each window's anchor bar, so a sampled batch draws exactly the
+/// uniforms its single-series rows do, and reproduces them to float32 rounding — not merely
+/// in distribution.
 /// </summary>
 public class BatchTests : IDisposable
 {
+    /// <summary>Equal to float32 rounding: a few ulps of the value, or of 1 near zero.
+    /// Not bit for bit — a matmul over more rows need not reproduce one over fewer, and
+    /// runners differ in which BLAS kernels they take. Nor rounded to fixed decimals, which
+    /// fails whenever two equal-to-rounding values straddle a rounding boundary.</summary>
+    private static void Close(double expected, double actual, double rel = 1e-5)
+        => Assert.True(Math.Abs(expected - actual) <= rel * Math.Max(1.0, Math.Abs(expected)),
+            $"expected {expected:R}, got {actual:R}");
+
     private const int Context = 64, Horizon = 3, Rollouts = 5;
 
     private readonly KronosForecaster _forecaster =
@@ -41,10 +50,11 @@ public class BatchTests : IDisposable
             _forecaster.InferPath(series[i].Ohlcva.Span, series[i].BarTimeMs.Span, l, u, d, p,
                 Context, Horizon, Rollouts, greedy: false, 1f, 0.9f);
 
-            Assert.Equal(l[^1], lean[i]);
+            // Same draws, same tokens: what differs between pass shapes is matmul rounding.
+            Close(l[^1], lean[i]);
             Assert.Equal(u[^1], up[i]);
-            Assert.Equal(d[^1], disp[i]);
-            Assert.Equal(p.AsSpan(p.Length - Horizon * 6).ToArray(), path.AsSpan(i * Horizon * 6, Horizon * 6).ToArray());
+            Close(d[^1], disp[i]);
+            for (var j = 0; j < Horizon * 6; j++) Close(p[p.Length - Horizon * 6 + j], path[i * Horizon * 6 + j]);
         }
     }
 
@@ -80,7 +90,7 @@ public class BatchTests : IDisposable
             var p = new float[KronosForecaster.PathLength(bars, Context, Horizon)];
             _forecaster.InferPath(b.Ohlcva.Span, b.BarTimeMs.Span, new float[rows], new int[rows], default, p,
                 Context, Horizon, Rollouts, greedy: false, 1f, 1f, seriesKey: 22);
-            Assert.Equal(independent[1], p[p.Length - Horizon * 6 + 3]);
+            Close(independent[1], p[p.Length - Horizon * 6 + 3]);
 
             var salted = Leans(SamplingSeeds.Salted(SamplingSeeds.AnchorTime, 1));
             Assert.Equal(salted[0], salted[1]);

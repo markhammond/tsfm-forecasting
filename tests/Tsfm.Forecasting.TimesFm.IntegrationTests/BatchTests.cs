@@ -8,9 +8,19 @@ namespace Tsfm.Forecasting.TimesFm.IntegrationTests;
 /// Batched calls against the single calls they batch. Run on a small random-init model,
 /// so they need no checkpoint and bite in CI: what is under test is the stacking of
 /// entries on the batch axis, not the weights.
+///
+/// <para>Agreement is to float32 rounding, not bit for bit. Whether a matmul over more
+/// rows reproduces one over fewer is up to the BLAS: libtorch's CPU kernels on Linux
+/// happen to, Accelerate on macOS does not, and the last bit of a logit then differs. A
+/// stacking bug — a transposed entry, a misplaced target — is orders of magnitude larger.</para>
 /// </summary>
 public class BatchTests
 {
+    /// <summary>A few float32 ulps of the value, or of 1 for values near zero.</summary>
+    private static void Close(double expected, double actual)
+        => Assert.True(Math.Abs(expected - actual) <= 1e-5 * Math.Max(1.0, Math.Abs(expected)),
+            $"expected {expected:R}, got {actual:R}");
+
     private static readonly TimesFmConfig Tiny = new(
         InputPatchLen: 8, OutputPatchLen: 16, Quantiles: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
         NumLayers: 2, ModelDims: 32, NumHeads: 4, UseVariateAttention: true, MaxVariates: 8, ValueClip: 1000);
@@ -34,7 +44,7 @@ public class BatchTests
     [Theory]
     [InlineData(64)]
     [InlineData(2)]
-    public void JointBatchMatchesSinglesExactly(int maxBatchPerPass)
+    public void JointBatchMatchesSingles(int maxBatchPerPass)
     {
         // Two shapes, interleaved; one pass per shape, or several when capped.
         JointSeries[] batch =
@@ -57,12 +67,12 @@ public class BatchTests
             var single = f.ForecastJoint(e.Series.Span, e.Variates, e.ContextBars, horizon, e.KnownFuture.Span, e.TargetVariate);
             for (var h = 0; h < horizon; h++)
             for (var k = 0; k < q; k++)
-                Assert.Equal(single[h, k], batched[(i * horizon + h) * q + k]);
+                Close(single[h, k], batched[(i * horizon + h) * q + k]);
         }
     }
 
     [Fact]
-    public void OhlcvaBatchMatchesSinglesExactly()
+    public void OhlcvaBatchMatchesSingles()
     {
         var bars = new float[32 * 6];
         for (var i = 0; i < bars.Length; i++) bars[i] = 100f + MathF.Sin(i / 7f);
@@ -78,7 +88,7 @@ public class BatchTests
             var single = f.Forecast(windows[i].Span, horizon);
             for (var h = 0; h < horizon; h++)
             for (var k = 0; k < q; k++)
-                Assert.Equal(single[h, k], batched[(i * horizon + h) * q + k]);
+                Close(single[h, k], batched[(i * horizon + h) * q + k]);
         }
     }
 }

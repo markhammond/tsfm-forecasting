@@ -261,8 +261,11 @@ block-by-block continuation past 1,024 steps.
 ## Batching
 
 Each forecaster has a batch form of its single call. Entries share a horizon and nothing
-else — they never attend to one another — so a batched result equals the single call's,
-exactly for TimesFM and Kronos and to float rounding for t0. What batching buys is fewer,
+else — they never attend to one another — so a batched result equals the single call's to
+float32 rounding. Not bit for bit in general: whether a matmul over more rows reproduces
+one over fewer is up to the BLAS, and macOS's does not. For Kronos, whose sampling picks
+tokens by comparing a uniform against a CDF, a last-bit difference can in principle flip a
+token, so batch invariance there is exact only where the backend is. What batching buys is fewer,
 larger forward passes: one per anchor is the dominant cost of a backtest.
 
 | | Single | Batch | What shares a pass |

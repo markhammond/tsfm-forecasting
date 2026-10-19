@@ -13,6 +13,14 @@ namespace Tsfm.Forecasting.T0.Tests;
 /// </summary>
 public class BatchTests
 {
+    /// <summary>Equal to float32 rounding: a few ulps of the value, or of 1 near zero.
+    /// Not bit for bit — a matmul over more rows need not reproduce one over fewer, and
+    /// runners differ in which BLAS kernels they take. Nor rounded to fixed decimals, which
+    /// fails whenever two equal-to-rounding values straddle a rounding boundary.</summary>
+    private static void Close(double expected, double actual, double rel = 1e-5)
+        => Assert.True(Math.Abs(expected - actual) <= rel * Math.Max(1.0, Math.Abs(expected)),
+            $"expected {expected:R}, got {actual:R}");
+
     private static readonly T0Config Tiny = new(
         EmbedDim: 16, NumLayers: 3, NumHeads: 2, MlpHiddenDim: 32, PatchSize: 4, GroupEveryN: 3,
         Quantiles: [0.1, 0.5, 0.9], ScalerUseArcsinh: true, ScalerEps: 0.1, ScalerStdClamp: false,
@@ -63,7 +71,7 @@ public class BatchTests
             var single = f.ForecastJoint(e.Series.Span, e.Variates, e.ContextBars, Horizon, e.KnownFuture.Span, e.TargetVariate);
             for (var h = 0; h < Horizon; h++)
             for (var k = 0; k < q; k++)
-                Assert.Equal(single[h, k], batched[(i * Horizon + h) * q + k], 4);
+                Close(single[h, k], batched[(i * Horizon + h) * q + k]);
         }
     }
 
@@ -98,7 +106,7 @@ public class BatchTests
             var single = f.Forecast(windows[i].Span, Horizon);
             for (var h = 0; h < Horizon; h++)
             for (var k = 0; k < q; k++)
-                Assert.Equal(single[h, k], batched[(i * Horizon + h) * q + k], 6);
+                Close(single[h, k], batched[(i * Horizon + h) * q + k]);
         }
     }
 
