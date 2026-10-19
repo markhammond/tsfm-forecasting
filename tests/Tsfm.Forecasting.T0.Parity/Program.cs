@@ -139,6 +139,29 @@ bool Run(string name)
     var epCov = forecaster.ForecastJoint(epJoint, 3, ep.Length, epTruth.Length, [false, true, true]);
     Check("notebook ep + cov", Grid(epCov), E("ep_predict_cov"), 1e-4);
 
+    // 7. One batch of mixed lengths — 150, 64 and 512 steps, one to two targets — against
+    // the reference's single forecasts. Truncating each to a shared 24 steps is exact for
+    // target-only entries: targets are causal, so later withheld patches cannot reach them.
+    const int shared = 24;
+    JointSeries[] batch =
+    [
+        new(joint.AsMemory(0, 2 * total), 2, t, TargetVariate: 1),
+        new(aligned, 1, 64),
+        new(m4, 1, m4.Length),
+        new(ep, 1, ep.Length),
+    ];
+    string[] refs = ["predict_targets_only", "predict_aligned", "m4_predict", "ep_predict"];
+    var outBatch = new double[forecaster.BatchOutputLength(batch.Length, shared)];
+    forecaster.ForecastJointBatch(batch, shared, outBatch);
+    for (var i = 0; i < batch.Length; i++)
+    {
+        var want = E(refs[i]);
+        if (want.dim() == 3) want = want[1];
+        var got = tensor(outBatch.AsSpan(i * shared * cfg.NumQuantiles, shared * cfg.NumQuantiles)
+            .ToArray().Select(d => (float)d).ToArray(), [shared, cfg.NumQuantiles]);
+        Check($"batch[{i}]", got, want.narrow(0, 0, shared), 1e-4, $"({refs[i]}, one pass)");
+    }
+
     var mid = Array.IndexOf(cfg.Quantiles, 0.5);
     Console.WriteLine($"  electricity price |median-truth|: {MeanAbs(epPlain, epTruth, mid):F4} without covariates, "
                       + $"{MeanAbs(epCov, epTruth, mid):F4} with");

@@ -43,10 +43,10 @@ jobs:
       - name: Test
         run: dotnet test tests/Tsfm.Forecasting.Kronos.Tests -c Release --nologo --no-build
 
-      # Vacuous here by design: the TimesFM checkpoint is ~1.2 GB and non-commercially
-      # licensed, so it is never fetched on a runner. Running them anyway proves they
-      # compile and start; the assertions only bite on a developer machine.
-      - name: TimesFM tests (self-skipping without weights)
+      # The checkpoint tests are vacuous here by design: the TimesFM checkpoint is ~1.2 GB
+      # and non-commercially licensed, so it is never fetched on a runner. The batch tests
+      # run on a random-init model and do bite.
+      - name: TimesFM tests (checkpoint tests self-skip)
         run: dotnet test tests/Tsfm.Forecasting.TimesFm.IntegrationTests -c Release --nologo
 
       # The invariant tests run on a tiny random-init model and need no weights; the

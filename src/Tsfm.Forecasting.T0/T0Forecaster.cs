@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+
 using static TorchSharp.torch;
 
 namespace Tsfm.Forecasting.T0;
@@ -12,8 +14,9 @@ namespace Tsfm.Forecasting.T0;
 ///
 /// <para>Every series not marked known is a forecast target, and targets are forecast
 /// jointly — so a channel cannot be handed its own future. Known-future series are
-/// conditioned on but not forecast, and by construction cannot read the targets: their
-/// group attention reads only other known-future rows.</para>
+/// conditioned on but not forecast, and by construction cannot read the targets: in
+/// variate attention a target reads every series of its entry, but a known-future series
+/// reads only known-future series, itself included.</para>
 /// </summary>
 /// <remarks>Inference is not thread safe.</remarks>
 public sealed class T0Forecaster(T0Model model, T0Config config, Device device) : IQuantileForecaster
@@ -63,52 +66,13 @@ public sealed class T0Forecaster(T0Model model, T0Config config, Device device) 
         ReadOnlySpan<float> series, int variates, int contextBars, int horizon,
         ReadOnlySpan<bool> knownFuture = default, int targetVariate = 0)
     {
-        if (variates < 1)
-            throw new ArgumentOutOfRangeException(nameof(variates), "at least one series is required");
-        if (series.Length % variates != 0)
-            throw new ArgumentException(
-                $"series length {series.Length} is not divisible by {variates} variates", nameof(series));
-        var total = series.Length / variates;
         ValidateHorizon(horizon);
-        if (contextBars < 1 || contextBars > total)
-            throw new ArgumentOutOfRangeException(nameof(contextBars),
-                $"contextBars must lie in 1..{total}; got {contextBars}");
-        if (targetVariate < 0 || targetVariate >= variates)
-            throw new ArgumentOutOfRangeException(nameof(targetVariate));
-        if (!knownFuture.IsEmpty && knownFuture.Length != variates)
-            throw new ArgumentException(
-                $"knownFuture must hold {variates} flags or be empty", nameof(knownFuture));
-        if (!knownFuture.IsEmpty && knownFuture[targetVariate])
-            throw new ArgumentException(
-                "the target variate cannot be known into the future", nameof(knownFuture));
-        var anyKnown = !knownFuture.IsEmpty && knownFuture.Contains(true);
-        if (anyKnown && horizon > total - contextBars)
-            throw new ArgumentOutOfRangeException(nameof(horizon),
-                $"horizon {horizon} exceeds the {total - contextBars} known steps supplied after the context");
+        var total = ValidateJoint(series.Length, variates, contextBars, horizon, knownFuture, targetVariate, "");
+        var layout = new Layout(config.PatchSize, contextBars, horizon, variates);
+        int[] targets = [AddJoint(layout, series, total, variates, contextBars, knownFuture, targetVariate)];
 
-        // Targets first, then known-future rows: the reference's row order. Attention is
-        // indifferent to it, but summation order is not, and parity is checked bit-close.
-        var order = new int[variates];
-        var known = new bool[variates];
-        var rows = 0;
-        for (var v = 0; v < variates; v++)
-            if (knownFuture.IsEmpty || !knownFuture[v]) order[rows++] = v;
-        for (var v = 0; v < variates; v++)
-            if (!knownFuture.IsEmpty && knownFuture[v]) { known[rows] = true; order[rows++] = v; }
-
-        var layout = new Layout(config.PatchSize, variates, contextBars, horizon);
-        var targetRow = Array.IndexOf(order, targetVariate);
-        for (var r = 0; r < variates; r++)
-        {
-            var src = series.Slice(order[r] * total, total);
-            layout.Row(r, src[..contextBars], known[r] ? src.Slice(contextBars, horizon) : default);
-        }
-
-        var head = Run(layout, targetRow);
         var result = new double[horizon, config.NumQuantiles];
-        for (var h = 0; h < horizon; h++)
-        for (var q = 0; q < config.NumQuantiles; q++)
-            result[h, q] = head[h * config.NumQuantiles + q];
+        Run(layout, targets, [0], MemoryMarshal.CreateSpan(ref result[0, 0], result.Length));
         return result;
     }
 
@@ -123,26 +87,203 @@ public sealed class T0Forecaster(T0Model model, T0Config config, Device device) 
     /// <returns>[horizon, numQuantiles] of cumulative return relative to the anchor close.</returns>
     public double[,] Forecast(ReadOnlySpan<float> ohlcva, int horizon)
     {
-        if (ohlcva.Length == 0 || ohlcva.Length % Channels != 0)
-            throw new ArgumentException($"ohlcva must hold whole bars of {Channels} channels", nameof(ohlcva));
         ValidateHorizon(horizon);
-        var bars = ohlcva.Length / Channels;
+        ValidateBars(ohlcva.Length, "");
+        var layout = new Layout(config.PatchSize, ohlcva.Length / Channels, horizon, Channels);
+        int[] targets = [AddBars(layout, ohlcva)];
 
-        var layout = new Layout(config.PatchSize, Channels, bars, horizon);
-        var column = new float[bars];
+        var result = new double[horizon, config.NumQuantiles];
+        var flat = MemoryMarshal.CreateSpan(ref result[0, 0], result.Length);
+        Run(layout, targets, [0], flat);
+        ToReturns(flat, ohlcva);
+        return result;
+    }
+
+    /// <summary>Rows — series, summed over entries — attended in one forward pass. A batch
+    /// is split into passes of at most this many, since group attention costs grow with the
+    /// square of the rows in a pass. An entry wider than this still runs, alone.</summary>
+    public int MaxRowsPerPass { get; set; } = 256;
+
+    /// <inheritdoc cref="IQuantileForecaster.BatchOutputLength"/>
+    public int BatchOutputLength(int entries, int horizon) => entries * horizon * config.NumQuantiles;
+
+    /// <summary>
+    /// <see cref="ForecastJoint"/> over many independent entries in as few passes as
+    /// <see cref="MaxRowsPerPass"/> allows. Each entry is its own group, so entries never
+    /// attend to one another; contexts may differ in length, each being left-padded to the
+    /// longest in its pass and the padding masked.
+    ///
+    /// <para>Entries are ordered by context length before being split into passes, so a
+    /// short entry is not padded out to a long one's width. Results are written in the
+    /// caller's order regardless.</para>
+    /// </summary>
+    /// <param name="batch">Entries, each with the constraints of <see cref="ForecastJoint"/>.</param>
+    /// <param name="horizon">Steps ahead, shared, 1..<see cref="MaxHorizon"/>.</param>
+    /// <param name="quantiles">Receives <c>[entry][step][quantile]</c>; sized by
+    /// <see cref="BatchOutputLength"/>.</param>
+    public void ForecastJointBatch(ReadOnlySpan<JointSeries> batch, int horizon, Span<double> quantiles)
+    {
+        ValidateHorizon(horizon);
+        ValidateDestination(quantiles.Length, batch.Length, horizon, nameof(quantiles));
+        var totals = new int[batch.Length];
+        var contexts = new int[batch.Length];
+        var widths = new int[batch.Length];
+        for (var i = 0; i < batch.Length; i++)
+        {
+            var e = batch[i];
+            totals[i] = ValidateJoint(e.Series.Length, e.Variates, e.ContextBars, horizon,
+                e.KnownFuture.Span, e.TargetVariate, $"batch[{i}]: ");
+            (contexts[i], widths[i]) = (e.ContextBars, e.Variates);
+        }
+
+        foreach (var pass in Passes(contexts, widths))
+        {
+            var layout = new Layout(config.PatchSize, pass.Max(i => contexts[i]), horizon, pass.Sum(i => widths[i]));
+            var targets = new int[pass.Length];
+            for (var j = 0; j < pass.Length; j++)
+            {
+                var e = batch[pass[j]];
+                targets[j] = AddJoint(layout, e.Series.Span, totals[pass[j]], e.Variates, e.ContextBars,
+                    e.KnownFuture.Span, e.TargetVariate);
+            }
+            Run(layout, targets, pass, quantiles);
+        }
+    }
+
+    /// <summary>
+    /// <see cref="Forecast"/> over many OHLCVA windows — instruments, or anchors along one
+    /// history — batched as <see cref="ForecastJointBatch"/> is. Windows may differ in
+    /// length; slicing one history into overlapping windows copies nothing.
+    /// </summary>
+    /// <param name="ohlcva">One row-major <c>[L x 6]</c> window per entry.</param>
+    /// <param name="horizon">Steps ahead, shared, 1..<see cref="MaxHorizon"/>.</param>
+    /// <param name="returns">Receives <c>[entry][step][quantile]</c> of cumulative return
+    /// relative to each window's anchor close; sized by <see cref="BatchOutputLength"/>.</param>
+    public void ForecastBatch(ReadOnlySpan<ReadOnlyMemory<float>> ohlcva, int horizon, Span<double> returns)
+    {
+        ValidateHorizon(horizon);
+        ValidateDestination(returns.Length, ohlcva.Length, horizon, nameof(returns));
+        var contexts = new int[ohlcva.Length];
+        for (var i = 0; i < ohlcva.Length; i++)
+        {
+            ValidateBars(ohlcva[i].Length, $"ohlcva[{i}]: ");
+            contexts[i] = ohlcva[i].Length / Channels;
+        }
+
+        var widths = Enumerable.Repeat(Channels, ohlcva.Length).ToArray();
+        foreach (var pass in Passes(contexts, widths))
+        {
+            var layout = new Layout(config.PatchSize, pass.Max(i => contexts[i]), horizon, pass.Length * Channels);
+            var targets = new int[pass.Length];
+            for (var j = 0; j < pass.Length; j++) targets[j] = AddBars(layout, ohlcva[pass[j]].Span);
+            Run(layout, targets, pass, returns);
+        }
+
+        var block = horizon * config.NumQuantiles;
+        for (var i = 0; i < ohlcva.Length; i++) ToReturns(returns.Slice(i * block, block), ohlcva[i].Span);
+    }
+
+    /// <summary>Entry indices grouped into passes: ordered by context so a pass pads to
+    /// similar widths, and cut wherever the next entry would exceed the row budget.</summary>
+    private List<int[]> Passes(int[] contexts, int[] rows)
+    {
+        var order = Enumerable.Range(0, contexts.Length).OrderBy(i => contexts[i]).ToArray();
+        var passes = new List<int[]>();
+        var (from, used) = (0, 0);
+        for (var j = 0; j < order.Length; j++)
+        {
+            if (j > from && used + rows[order[j]] > MaxRowsPerPass)
+            {
+                passes.Add(order[from..j]);
+                (from, used) = (j, 0);
+            }
+            used += rows[order[j]];
+        }
+        if (from < order.Length) passes.Add(order[from..]);
+        return passes;
+    }
+
+    /// <summary>Add one joint entry as its own group: targets first, then known-future rows,
+    /// the reference's row order — attention is indifferent to it, but summation order is
+    /// not, and parity is checked bit-close. Returns the target's row.</summary>
+    private static int AddJoint(Layout layout, ReadOnlySpan<float> series, int total, int variates,
+        int contextBars, ReadOnlySpan<bool> knownFuture, int targetVariate)
+    {
+        var group = layout.NextGroup();
+        var target = -1;
+        for (var pass = 0; pass < 2; pass++)
+        for (var v = 0; v < variates; v++)
+        {
+            var known = !knownFuture.IsEmpty && knownFuture[v];
+            if (known != (pass == 1)) continue;
+            var src = series.Slice(v * total, total);
+            var row = layout.AddRow(group, src[..contextBars], known ? src.Slice(contextBars, layout.Horizon) : default);
+            if (v == targetVariate) target = row;
+        }
+        return target;
+    }
+
+    /// <summary>Add one OHLCVA window as a group of six targets; returns the close's row.</summary>
+    private static int AddBars(Layout layout, ReadOnlySpan<float> ohlcva)
+    {
+        var group = layout.NextGroup();
+        var bars = ohlcva.Length / Channels;
+        Span<float> column = bars <= 1024 ? stackalloc float[bars] : new float[bars];
+        var close = -1;
         for (var c = 0; c < Channels; c++)
         {
             for (var t = 0; t < bars; t++) column[t] = ohlcva[t * Channels + c];
-            layout.Row(c, column, default);
+            var row = layout.AddRow(group, column, default);
+            if (c == CloseChannel) close = row;
         }
+        return close;
+    }
 
-        var head = Run(layout, CloseChannel);
-        var anchorClose = ohlcva[(bars - 1) * Channels + CloseChannel];
-        var result = new double[horizon, config.NumQuantiles];
-        for (var h = 0; h < horizon; h++)
-        for (var q = 0; q < config.NumQuantiles; q++)
-            result[h, q] = head[h * config.NumQuantiles + q] / anchorClose - 1.0;
-        return result;
+    private static void ToReturns(Span<double> prices, ReadOnlySpan<float> ohlcva)
+    {
+        var anchorClose = ohlcva[^(Channels - CloseChannel)];
+        for (var i = 0; i < prices.Length; i++) prices[i] = prices[i] / anchorClose - 1.0;
+    }
+
+    private static int ValidateJoint(int length, int variates, int contextBars, int horizon,
+        ReadOnlySpan<bool> knownFuture, int targetVariate, string where)
+    {
+        if (variates < 1)
+            throw new ArgumentOutOfRangeException(nameof(variates), $"{where}at least one series is required");
+        if (length % variates != 0)
+            throw new ArgumentException(
+                $"{where}series length {length} is not divisible by {variates} variates", "series");
+        var total = length / variates;
+        if (contextBars < 1 || contextBars > total)
+            throw new ArgumentOutOfRangeException(nameof(contextBars),
+                $"{where}contextBars must lie in 1..{total}; got {contextBars}");
+        if (targetVariate < 0 || targetVariate >= variates)
+            throw new ArgumentOutOfRangeException(nameof(targetVariate), $"{where}no variate {targetVariate}");
+        if (!knownFuture.IsEmpty && knownFuture.Length != variates)
+            throw new ArgumentException(
+                $"{where}knownFuture must hold {variates} flags or be empty", nameof(knownFuture));
+        if (!knownFuture.IsEmpty && knownFuture[targetVariate])
+            throw new ArgumentException(
+                $"{where}the target variate cannot be known into the future", nameof(knownFuture));
+        if (!knownFuture.IsEmpty && knownFuture.Contains(true) && horizon > total - contextBars)
+            throw new ArgumentOutOfRangeException(nameof(horizon),
+                $"{where}horizon {horizon} exceeds the {total - contextBars} known steps supplied after the context");
+        return total;
+    }
+
+    private static void ValidateBars(int length, string where)
+    {
+        if (length == 0 || length % Channels != 0)
+            throw new ArgumentException($"{where}ohlcva must hold whole bars of {Channels} channels", "ohlcva");
+    }
+
+    private void ValidateDestination(int length, int entries, int horizon, string name)
+    {
+        if (length != BatchOutputLength(entries, horizon))
+            throw new ArgumentException(
+                $"{name} must hold exactly {BatchOutputLength(entries, horizon)} elements "
+                + $"(entries x horizon x {config.NumQuantiles} quantiles); got {length}. Use {nameof(BatchOutputLength)}.",
+                name);
     }
 
     private static void ValidateHorizon(int horizon)
@@ -151,9 +292,9 @@ public sealed class T0Forecaster(T0Model model, T0Config config, Device device) 
             throw new ArgumentOutOfRangeException(nameof(horizon), $"horizon must lie in 1..{MaxHorizon}");
     }
 
-    /// <summary>One forward pass; the target row's first <c>horizon</c> steps as
-    /// <c>[horizon * quantiles]</c>, in data units.</summary>
-    private float[] Run(Layout layout, int targetRow)
+    /// <summary>One forward pass. Writes target row <c>j</c>'s first <c>horizon</c> steps,
+    /// in data units, to <paramref name="destination"/> at slot <c>slots[j]</c>.</summary>
+    private void Run(Layout layout, int[] targetRows, ReadOnlySpan<int> slots, Span<double> destination)
     {
         using var scope = NewDisposeScope();
         using var _ = no_grad();
@@ -170,59 +311,81 @@ public sealed class T0Forecaster(T0Model model, T0Config config, Device device) 
 
         // The output at patch i forecasts patch i + 1, so the horizon starts at the last
         // context patch.
-        var p = config.PatchSize;
-        var forecast = data[targetRow]
-            .narrow(0, layout.ContextPatches - 1, layout.ForecastPatches)
-            .reshape(layout.ForecastPatches * p, config.NumQuantiles)
-            .narrow(0, 0, layout.Horizon);
+        var (p, q, h) = (config.PatchSize, config.NumQuantiles, layout.Horizon);
+        var forecast = data.index_select(0, tensor(targetRows.Select(r => (long)r).ToArray()).to(device))
+            .narrow(1, layout.ContextPatches - 1, layout.ForecastPatches)
+            .reshape(targetRows.Length, layout.ForecastPatches * p, q)
+            .narrow(1, 0, h);
         forecast = nan_to_num(forecast, 0.0, 0.0, 0.0);   // the reference zeroes non-finite output
-        return forecast.cpu().contiguous().data<float>().ToArray();
+        var host = forecast.cpu().contiguous().data<float>();
+
+        var block = h * q;
+        for (var j = 0; j < targetRows.Length; j++)
+        {
+            var dst = destination.Slice(slots[j] * block, block);
+            for (var i = 0; i < block; i++) dst[i] = host[j * block + i];
+        }
     }
 
     /// <summary>
-    /// The per-step input the model reads: the context left-padded onto the patch grid, then
-    /// the horizon rounded up to whole patches. Over the horizon a target is withheld and a
-    /// known-future row carries its values; padding is inert (value 0, group and role -1).
+    /// The per-step input the model reads, for one or many groups. Every row is right-aligned
+    /// on the forecast start, which sits on a patch boundary: its context is left-padded to
+    /// the longest in the pass, rounded up to whole patches, and the horizon rounded up after
+    /// it. So a row's patch grid is the same alone or batched. Over the horizon a target is
+    /// withheld and a known-future row carries its values; padding is inert (value 0, group
+    /// and role -1).
     /// </summary>
     private sealed class Layout
     {
-        public readonly int Rows, Width, PadLeft, Context, Horizon, ContextPatches, ForecastPatches;
+        public readonly int Rows, Width, ContextWidth, Horizon, ContextPatches, ForecastPatches;
         public readonly float[] Values;
         public readonly long[] Mask, Groups, Types;
+        private int _row;
+        private long _group;
 
-        public Layout(int patch, int rows, int context, int horizon)
+        public Layout(int patch, int maxContext, int horizon, int rows)
         {
-            (Rows, Context, Horizon) = (rows, context, horizon);
-            PadLeft = (patch - context % patch) % patch;
+            (Rows, Horizon) = (rows, horizon);
+            ContextPatches = (maxContext + patch - 1) / patch;
             ForecastPatches = (horizon + patch - 1) / patch;
-            ContextPatches = (PadLeft + context) / patch;
-            Width = PadLeft + context + ForecastPatches * patch;
+            ContextWidth = ContextPatches * patch;
+            Width = ContextWidth + ForecastPatches * patch;
             Values = new float[rows * Width];
             Mask = new long[rows * Width];
             Groups = new long[rows * Width];
             Types = new long[rows * Width];
         }
 
-        /// <param name="row">Row index.</param>
+        public long NextGroup() => _group++;
+
+        /// <param name="group">Rows sharing a group attend to one another.</param>
         /// <param name="context">Observed steps.</param>
         /// <param name="future">Known future values, or empty for a target.</param>
-        public void Row(int row, ReadOnlySpan<float> context, ReadOnlySpan<float> future)
+        /// <returns>The row written.</returns>
+        public int AddRow(long group, ReadOnlySpan<float> context, ReadOnlySpan<float> future)
         {
+            var row = _row++;
             var isFuture = !future.IsEmpty;
+            var pad = ContextWidth - context.Length;
             var o = row * Width;
             for (var i = 0; i < Width; i++)
             {
-                var pad = i < PadLeft;
-                Groups[o + i] = pad ? -1 : 0;
-                Types[o + i] = pad ? -1 : isFuture ? VariateType.Future : VariateType.Target;
-                if (pad) { Mask[o + i] = MaskType.Pad; continue; }
+                if (i < pad)
+                {
+                    (Mask[o + i], Groups[o + i], Types[o + i]) = (MaskType.Pad, -1, -1);
+                    continue;
+                }
+                Groups[o + i] = group;
+                Types[o + i] = isFuture ? VariateType.Future : VariateType.Target;
 
-                var t = i - PadLeft;
-                if (t < Context) Write(o + i, context[t]);
+                var t = i - pad;
+                var f = t - context.Length;
+                if (f < 0) Write(o + i, context[t]);
                 else if (!isFuture) Mask[o + i] = MaskType.Withheld;
-                else if (t - Context < Horizon) Write(o + i, future[t - Context]);
+                else if (f < Horizon) Write(o + i, future[f]);
                 else Mask[o + i] = MaskType.Pad;     // the horizon's last patch, beyond what was asked
             }
+            return row;
         }
 
         private void Write(int at, float value)

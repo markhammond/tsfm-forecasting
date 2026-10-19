@@ -122,6 +122,16 @@ public sealed class T0Model : Module
     /// matched: an unbound tensor keeps its random init and still forecasts plausibly.</summary>
     public static T0Model Load(string checkpointDir, Device device)
     {
+        // Weights are not packaged, so a missing directory is the likeliest first failure;
+        // say how to get them rather than surfacing a bare FileNotFoundException.
+        foreach (var file in (string[])["config.json", "model.safetensors"])
+            if (!File.Exists(Path.Combine(checkpointDir, file)))
+                throw new FileNotFoundException(
+                    $"{Path.Combine(checkpointDir, file)} not found. t0 weights are not bundled: fetch them with "
+                    + "scripts/fetch-t0-checkpoint.sh, or download config.json and model.safetensors from "
+                    + "https://huggingface.co/theforecastingcompany/t0-alpha (or t0-beta) into that directory.",
+                    Path.Combine(checkpointDir, file));
+
         var cfg = T0Config.Load(Path.Combine(checkpointDir, "config.json"));
         using var stream = File.OpenRead(Path.Combine(checkpointDir, "model.safetensors"));
         return Load(cfg, stream, device, checkpointDir);

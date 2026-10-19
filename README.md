@@ -109,8 +109,8 @@ a channel left non-target would be handed its own future values.
 
 [t0](https://arxiv.org/abs/2609.24559) from The Forecasting Company is a decoder-style patch
 transformer alternating causal time attention with variate (group) attention, with native
-known-future covariates. Both checkpoints are **Apache-2.0**. They are fetched rather than
-packaged only because each exceeds nuget.org's 250 MB limit.
+known-future covariates. Both checkpoints are **Apache-2.0**, but **the package carries no
+weights**: install them yourself, as below.
 
 | Checkpoint | Params | Quantiles | Scaler eps |
 |---|---|---|---|
@@ -120,8 +120,47 @@ packaged only because each exceeds nuget.org's 250 MB limit.
 ```
 dotnet add package Tsfm.Forecasting.T0
 dotnet add package TorchSharp-cpu
-./scripts/fetch-t0-checkpoint.sh            # both; or name one: t0-alpha | t0-beta
 ```
+
+### Installing the weights
+
+`T0Forecaster.Load(dir, device)` needs a directory holding two files from the Hugging Face
+repository, unrenamed:
+
+```
+<dir>/config.json          # architecture and scaler convention — required, not optional
+<dir>/model.safetensors    # 407 MB (alpha) or 1.0 GB (beta)
+```
+
+From a clone of this repository, the script fetches both checkpoints at the revisions the
+port was verified against, and checks each payload's SHA-256:
+
+```
+./scripts/fetch-t0-checkpoint.sh            # both, into checkpoints/t0-alpha and checkpoints/t0-beta
+./scripts/fetch-t0-checkpoint.sh t0-beta    # or one
+```
+
+From a project that only references the package, download them directly — pinning the
+revision, since a refreshed checkpoint would silently change every forecast:
+
+```
+fetch() {   # name, revision, sha256
+  mkdir -p "models/$1"
+  for f in config.json model.safetensors; do
+    curl -fL -o "models/$1/$f" "https://huggingface.co/theforecastingcompany/$1/resolve/$2/$f"
+  done
+  echo "$3  models/$1/model.safetensors" | shasum -a 256 -c
+}
+fetch t0-alpha 741927847fe02367624749bb9290b2f09f128e7d 16c030d3fd70f06dc4238e9a8356e9b5a631d07f80f1bc76ba539991aed5897f
+fetch t0-beta  941e522547ec63f0f2aad57089fa0f5b8498bdf8 a0fd8abd51275dd30afd21f4892c763ebd45e2cb1811eff26eed43f89a543f7d
+```
+
+`hf download theforecastingcompany/t0-beta config.json model.safetensors --revision <rev>
+--local-dir models/t0-beta` does the same through the Hugging Face CLI. Deploy the directory
+beside your application like any other data file; nothing is read from the environment or
+a cache, and a missing file fails at `Load` with these instructions in the message.
+
+### Use
 
 ```csharp
 using Tsfm.Forecasting.T0;
@@ -136,7 +175,7 @@ double[,] r = t0.Forecast(ohlcva, horizon: 4);                      // forward r
 
 Both forecasters implement `IQuantileForecaster`, so one call site drives either;
 `Quantiles` names the columns, whose count differs per checkpoint. `samples/GroceryCovariates`
-runs on either (`-- t0-beta`).
+runs on either (`-- t0-beta`). Both also batch; see [Batching](#batching).
 
 What differs from TimesFM:
 
@@ -145,13 +184,52 @@ What differs from TimesFM:
   evaluates at 8192.
 - **Up to 1024 steps per pass.** Every horizon patch is decoded at once. The reference
   continues past 1024 by an autoregressive rollout over quantile paths, which is not ported.
-- **Known-future series cannot read the targets.** Group attention lets a known-future row
-  attend only to other known-future rows, so information flows from covariates into
-  targets and never back. They are scaled by global rather than causal statistics.
+- **Information flows from covariates to targets, never back.** In variate attention a
+  target reads every series in its entry, but a known-future series reads only the
+  known-future series (itself included). A covariate's representation therefore never
+  depends on the target's history, and cannot smuggle it forward. Known-future series are
+  also scaled by global rather than causal statistics.
 - **Each checkpoint names its own scaler convention.** t0-beta's `config.json` carries
   `scaler_eps` and `scaler_eps_mode`; alpha's predates them, so their absence means alpha's
   values. Running beta under alpha's convention loads cleanly and silently degrades the
   forecast — which is why they are read rather than assumed.
+
+## Batching
+
+Each forecaster has a batch form of its single call. Entries share a horizon and nothing
+else — they never attend to one another — so a batched result equals the single call's,
+exactly for TimesFM and Kronos and to float rounding for t0. What batching buys is fewer,
+larger forward passes: one per anchor is the dominant cost of a backtest.
+
+| | Single | Batch | What shares a pass |
+|---|---|---|---|
+| t0 | `ForecastJoint`, `Forecast` | `ForecastJointBatch`, `ForecastBatch` | any entries, up to `MaxRowsPerPass` series; shorter contexts are left-padded and masked |
+| TimesFM | `ForecastJoint`, `Forecast` | `ForecastJointBatch`, `ForecastBatch` | entries of one shape (variates, length, context), up to `MaxBatchPerPass` |
+| Kronos | `Infer`, `InferPath` (windows along one series) | `InferBatch` (final window of many series) | `batch` windows × `rollouts` |
+
+The t0 and TimesFM batches are on `IQuantileForecaster`, take `JointSeries` entries (or
+OHLCVA windows) as `ReadOnlyMemory`, and write `[entry][step][quantile]` into a span sized
+by `BatchOutputLength`. Anchors along one history are slices of one array, so building a
+backtest batch copies nothing:
+
+```csharp
+var windows = anchors.Select(a => history.AsMemory((a - context + 1) * 6, context * 6)).ToArray();
+var returns = new double[forecaster.BatchOutputLength(windows.Length, horizon)];
+forecaster.ForecastBatch(windows, horizon, returns);
+```
+
+**Batching and rollouts.** The batch axis holds independent series; rollouts are samples
+*within* one series. Kronos flattens both into one tensor batch of `series × rollouts`
+rows, and a `RolloutAggregator` reduces only across the rollouts of one series, at one step
+and channel — never across series. So the two compose without interaction, except in cost:
+memory scales with the product, which is why Kronos's `batch` counts windows and leaves
+rows to be `batch * rollouts`. Sampling is seeded per window from its anchor bar, so
+results do not depend on how windows were grouped into passes; the corollary is that two
+instruments anchored on the same bar draw the same uniforms (common random numbers).
+TimesFM and t0 emit quantiles directly, with no rollouts and nothing to aggregate. t0's
+upstream continuation past 1024 steps (not ported) would be the same pattern again: each
+requested quantile becomes a path, paths are folded into the batch as extra groups, and
+they are reduced per series to quantiles.
 
 ## Choose your own backend
 

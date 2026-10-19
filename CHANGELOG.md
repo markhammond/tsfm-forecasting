@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — unreleased
 
 ### Tsfm.Forecasting.T0 (Apache-2.0) — new
 
@@ -22,15 +22,37 @@
   extrapolation to levels off the trained grid, and the optional symmetric averaging,
   clipping and integer snapping.
 
-### Tsfm.Forecasting
+- Weights are not bundled. The README gives pinned download commands with checksums for
+  projects that only reference the package, and `Load` names them when files are missing.
 
-- `IQuantileForecaster`: the shared `ForecastJoint` / `Forecast` / `Quantiles` shape.
-  `TimesFmForecaster` and `T0Forecaster` implement it, so one call site drives either.
-  Additive; TimesFM behaviour is unchanged.
+### Batching, across all three models
+
+- `IQuantileForecaster` (new, in `Tsfm.Forecasting`): the shared `ForecastJoint` /
+  `Forecast` / `Quantiles` shape, plus `ForecastJointBatch` and `ForecastBatch` over many
+  entries sharing a horizon, written `[entry][step][quantile]` into a caller-sized span
+  (`BatchOutputLength`). Entries are `JointSeries` / `ReadOnlyMemory<float>`, so anchors
+  sliced from one history copy nothing. `TimesFmForecaster` and `T0Forecaster` implement it.
+- t0 batches any entries in one pass — differing variates, contexts and known-future
+  patterns — each its own attention group, shorter contexts left-padded and masked. Entries
+  are ordered by context before being cut into passes of `MaxRowsPerPass` series. Verified
+  against the reference in the parity harness.
+- TimesFM stacks entries of one shape on the model's batch axis, `MaxBatchPerPass` at a
+  time. The single calls now run as a batch of one; outputs are bit-identical to 0.1.3.
+- `KronosForecaster.InferBatch` forecasts the final window of many series in one pass of
+  `batch × rollouts` rows; row `i` equals the last row `InferPath` gives for series `i`
+  alone, sampling included. `Infer` and `InferPath` share the refactored loop and are
+  bit-identical to 0.1.3.
+
+### Packaging
+
+All six packages move to 0.2.0: the core gains the interface the model packages implement,
+and a project reference packs an exact-version dependency.
 
 ### Samples and testing
 
 - `samples/GroceryCovariates` runs on TimesFM or t0 (`-- t0-beta`) through the interface.
+- Batch tests for TimesFM and t0 run on small random-init models, so they bite in CI
+  without weights; Kronos's run with the integration tests.
 - `Tsfm.Forecasting.T0.Tests` checks structural invariants on a tiny random-init model, so
   they run in CI without weights: a target never reads its own future, known-future rows
   never read targets, time attention is causal, any context length is accepted. Behaviour
