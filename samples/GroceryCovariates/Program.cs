@@ -12,11 +12,14 @@
 //
 //   dotnet run --project samples/GroceryCovariates              # TimesFM 3.0
 //   dotnet run --project samples/GroceryCovariates -- t0-beta   # or t0-alpha
+//   dotnet run --project samples/GroceryCovariates -- Timestral-5M   # embedded; or -28M, -123M, -209M
 
 using TorchSharp;
 
 using Tsfm.Forecasting;
 using Tsfm.Forecasting.T0;
+using Tsfm.Forecasting.Timestral;
+using Tsfm.Forecasting.Timestral.Weights;
 using Tsfm.Forecasting.TimesFm;
 
 using static TorchSharp.torch;
@@ -44,7 +47,20 @@ var checkpoint = Path.Combine(root, "checkpoints", model);
 
 IQuantileForecaster forecaster;
 int context, total, pad;
-if (model.StartsWith("t0"))
+if (model.StartsWith("Timestral"))
+{
+    // Like t0, Timestral pads a short context itself. 5M and 28M are embedded; the larger
+    // two load from a fetched directory.
+    forecaster = model switch
+    {
+        "Timestral-5M" => TimestralForecaster.Load(Timestral5M.Instance, device),
+        "Timestral-28M" => TimestralForecaster.Load(Timestral28M.Instance, device),
+        _ => TimestralForecaster.Load(checkpoint, device),
+    };
+    (context, total, pad) = (observed, observed + horizon, 0);
+    Console.WriteLine($"{model} on {device.type}: {observed} days observed, {horizon} forecast\n");
+}
+else if (model.StartsWith("t0"))
 {
     // t0 left-pads a short context onto its patch grid itself, and masks the padding.
     forecaster = T0Forecaster.Load(checkpoint, device);
@@ -94,5 +110,5 @@ foreach (var (name, sales, promotion) in products)
     Console.WriteLine();
 }
 
-// The column nearest a level: the grids differ (TimesFM 9, t0-alpha 5, t0-beta 21 levels).
+// The column nearest a level: the grids differ (TimesFM 9, t0-alpha 5, t0-beta and Timestral 21).
 int Level(double level) => Enumerable.Range(0, quantiles.Count).MinBy(i => Math.Abs(quantiles[i] - level));

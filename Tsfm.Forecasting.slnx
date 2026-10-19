@@ -5,14 +5,20 @@
   <Project Path="src/Tsfm.Forecasting.Kronos.Weights.Mini/Tsfm.Forecasting.Kronos.Weights.Mini.csproj" />
   <Project Path="src/Tsfm.Forecasting.TimesFm/Tsfm.Forecasting.TimesFm.csproj" />
   <Project Path="src/Tsfm.Forecasting.T0/Tsfm.Forecasting.T0.csproj" />
+  <Project Path="src/Tsfm.Forecasting.Timestral/Tsfm.Forecasting.Timestral.csproj" />
+  <Project Path="src/Tsfm.Forecasting.Timestral.Weights.5M/Tsfm.Forecasting.Timestral.Weights.5M.csproj" />
+  <Project Path="src/Tsfm.Forecasting.Timestral.Weights.28M/Tsfm.Forecasting.Timestral.Weights.28M.csproj" />
   <Project Path="tests/Tsfm.Forecasting.Kronos.Tests/Tsfm.Forecasting.Kronos.Tests.csproj" />
   <Project Path="tests/Tsfm.Forecasting.Kronos.Parity/Tsfm.Forecasting.Kronos.Parity.csproj" />
   <Project Path="tests/Tsfm.Forecasting.TimesFm.Parity/Tsfm.Forecasting.TimesFm.Parity.csproj" />
   <Project Path="tests/Tsfm.Forecasting.T0.Parity/Tsfm.Forecasting.T0.Parity.csproj" />
+  <Project Path="tests/Tsfm.Forecasting.Timestral.Parity/Tsfm.Forecasting.Timestral.Parity.csproj" />
   <Project Path="tests/Tsfm.Forecasting.Bakeoff/Tsfm.Forecasting.Bakeoff.csproj" />
   <Project Path="tests/Tsfm.Forecasting.Kronos.IntegrationTests/Tsfm.Forecasting.Kronos.IntegrationTests.csproj" />
   <Project Path="samples/CandleForecast/CandleForecast.csproj" />
   <Project Path="samples/GroceryCovariates/GroceryCovariates.csproj" />
   <Project Path="tests/Tsfm.Forecasting.TimesFm.IntegrationTests/Tsfm.Forecasting.TimesFm.IntegrationTests.csproj" />
   <Project Path="tests/Tsfm.Forecasting.T0.Tests/Tsfm.Forecasting.T0.Tests.csproj" />
+  <Project Path="tests/Tsfm.Forecasting.Timestral.Tests/Tsfm.Forecasting.Timestral.Tests.csproj" />
+  <Project Path="tests/Tsfm.Forecasting.Timestral.IntegrationTests/Tsfm.Forecasting.Timestral.IntegrationTests.csproj" />
 </Solution>

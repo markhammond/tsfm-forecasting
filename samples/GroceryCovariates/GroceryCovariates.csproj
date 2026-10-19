@@ -13,6 +13,8 @@
     <ItemGroup>
         <ProjectReference Include="..\..\src\Tsfm.Forecasting.TimesFm\Tsfm.Forecasting.TimesFm.csproj" />
         <ProjectReference Include="..\..\src\Tsfm.Forecasting.T0\Tsfm.Forecasting.T0.csproj" />
+        <ProjectReference Include="..\..\src\Tsfm.Forecasting.Timestral.Weights.5M\Tsfm.Forecasting.Timestral.Weights.5M.csproj" />
+        <ProjectReference Include="..\..\src\Tsfm.Forecasting.Timestral.Weights.28M\Tsfm.Forecasting.Timestral.Weights.28M.csproj" />
     </ItemGroup>
 
 </Project>

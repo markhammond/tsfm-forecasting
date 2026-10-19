@@ -77,3 +77,40 @@ Changes to the derived work, as required by Apache-2.0 section 4(b):
 No upstream source files and no weights are redistributed. The t0-alpha and
 t0-beta checkpoints are Apache-2.0, published by The Forecasting Company, and
 are fetched by scripts/fetch-t0-checkpoint.sh at pinned revisions.
+
+────────────────────────────────────────────────────────────────────────────────
+Tsfm.Forecasting.Timestral — Apache-2.0, NOT MIT
+────────────────────────────────────────────────────────────────────────────────
+
+That package contains software derived from Timestral
+(https://github.com/mistralai/timestral), Copyright Mistral AI, licensed under the
+Apache License, Version 2.0.
+
+Changes to the derived work, as required by Apache-2.0 section 4(b):
+
+  - The inference path is translated from Python/PyTorch to C#/TorchSharp: the
+    causal per-patch scaler, instance scaling of known-future covariates, patch
+    representation, the time/variate transformer with gated attention and
+    partial rotary embedding, the monotone quantile head, the attention masks
+    and positions, and the forecaster's refine frame, quantile cap, symmetric
+    averaging and non-negative clipping.
+  - Decoder tokens are built for the horizon patches only; the reference also
+    builds, then discards, one for every earlier patch.
+  - Symmetric averaging runs the negated input in the same forward pass as the
+    original, as further groups, instead of in a second call.
+  - The advancing refine frame accumulates per-patch Welford states sequentially
+    rather than by a parallel prefix scan; both are float64.
+  - A context longer than the trained length is refused rather than truncated.
+  - Past-only covariates as a separate role, categorical target encoding and the
+    block-by-block continuation beyond one decoded block are not ported.
+
+────────────────────────────────────────────────────────────────────────────────
+Tsfm.Forecasting.Timestral.Weights.5M and .28M — Mistral AI Modified MIT
+────────────────────────────────────────────────────────────────────────────────
+
+These packages redistribute, unmodified, the Timestral-5M and Timestral-28M weights
+published by Mistral AI. The weights are under Mistral AI's Modified MIT licence,
+reproduced verbatim in LICENSE-Timestral-Weights inside each package. It is NOT an
+open-source licence: its condition 2 grants no rights to anyone whose company (or
+employer) had global consolidated monthly revenue above USD 20 million in the
+preceding month. Attribution notice: 2026 - Mistral AI.

@@ -1,6 +1,6 @@
 # Tsfm.Forecasting
 
-Native .NET inference for time-series foundation models, on CPU or GPU via
+Probabilistic forecasting with native .NET inference for time-series foundation models, on CPU or GPU via
 TorchSharp. Currently [Kronos](https://github.com/shiyu-coder/Kronos), [TimesFM 3.0](https://github.com/google-research/timesfm)
 and [t0](https://huggingface.co/theforecastingcompany/t0-beta) (t0-alpha, t0-beta).
 
@@ -18,6 +18,9 @@ NuGet packages:
 | Tsfm.Forecasting.Kronos.Weights.Mini [![NuGet](https://img.shields.io/nuget/v/Tsfm.Forecasting.Kronos.Weights.Mini.svg)](https://www.nuget.org/packages/Tsfm.Forecasting.Kronos.Weights.Mini) | MIT | Kronos-mini (4.1M) + Tokenizer-2k |
 | Tsfm.Forecasting.TimesFm [![NuGet](https://img.shields.io/nuget/v/Tsfm.Forecasting.TimesFm.svg)](https://www.nuget.org/packages/Tsfm.Forecasting.TimesFm) | **Apache-2.0** | TimesFM 3.0 — **no weights** |
 | Tsfm.Forecasting.T0 [![NuGet](https://img.shields.io/nuget/v/Tsfm.Forecasting.T0.svg)](https://www.nuget.org/packages/Tsfm.Forecasting.T0) | **Apache-2.0** | t0-alpha, t0-beta — open weights, fetched separately |
+| Tsfm.Forecasting.Timestral [![NuGet](https://img.shields.io/nuget/v/Tsfm.Forecasting.Timestral.svg)](https://www.nuget.org/packages/Tsfm.Forecasting.Timestral) | **Apache-2.0** | Timestral (Mistral AI) — code only |
+| Tsfm.Forecasting.Timestral.Weights.5M [![NuGet](https://img.shields.io/nuget/v/Tsfm.Forecasting.Timestral.Weights.5M.svg)](https://www.nuget.org/packages/Tsfm.Forecasting.Timestral.Weights.5M) | **Mistral Modified MIT** — revenue-restricted | Timestral-5M (5.2M) |
+| Tsfm.Forecasting.Timestral.Weights.28M [![NuGet](https://img.shields.io/nuget/v/Tsfm.Forecasting.Timestral.Weights.28M.svg)](https://www.nuget.org/packages/Tsfm.Forecasting.Timestral.Weights.28M) | **Mistral Modified MIT** — revenue-restricted | Timestral-28M (27.8M) |
 
 Refer to respective package for license and conditions of use (if any).
 
@@ -194,6 +197,66 @@ What differs from TimesFM:
   values. Running beta under alpha's convention loads cleanly and silently degrades the
   forecast — which is why they are read rather than assumed.
 
+## Timestral — 5M and 28M batteries included
+
+> **The weights are not open source.** Mistral AI publishes them under a Modified MIT
+> licence whose condition 2 withholds *every* right from anyone whose company — or
+> employer — had consolidated monthly revenue above USD 20 million in the preceding month.
+> That binds each consumer, not only whoever publishes a package. The weights packages
+> carry the licence verbatim (`LICENSE-Timestral-Weights`, and `Timestral5M.License` at
+> run time) and require its acceptance on install. The code here is Apache-2.0 and grants
+> nothing in the weights.
+
+[Timestral](https://github.com/mistralai/timestral) is a causal patch transformer with time
+and variate attention, trained with Decoupled Horizon Forecasting: forecast-query tokens
+read the encoded context, and a monotone head emits 21 quantiles per step. Context up to
+32,768 steps; up to 1,024 forecast in one pass.
+
+```
+dotnet add package Tsfm.Forecasting.Timestral.Weights.5M     # or .28M; brings the code package
+dotnet add package TorchSharp-cpu
+```
+
+```csharp
+using Tsfm.Forecasting.Timestral;
+using Tsfm.Forecasting.Timestral.Weights;
+
+var ts = TimestralForecaster.Load(Timestral28M.Instance, new Device("cpu"));
+double[,] q = ts.ForecastJoint(series, variates: 3, contextBars: 2048, horizon: 96,
+                               knownFuture: [false, true, true]);    // [step, 21 quantiles]
+```
+
+| Checkpoint | Params | Weights | Delivered as | CPU, 512 → 24 steps (.NET / Python) |
+|---|---|---|---|---|
+| Timestral-5M | 5.2M | 21 MB | `Tsfm.Forecasting.Timestral.Weights.5M` | 11 ms / 19 ms |
+| Timestral-28M | 27.8M | 111 MB | `Tsfm.Forecasting.Timestral.Weights.28M` | 37 ms / 48 ms |
+| Timestral-123M | 122.6M | 490 MB | `./scripts/fetch-timestral-checkpoint.sh Timestral-123M` | 128 ms / 141 ms |
+| Timestral-209M | 209.3M | 837 MB | `./scripts/fetch-timestral-checkpoint.sh Timestral-209M` | 138 ms / 191 ms |
+
+Timings are 4 CPU cores with the defaults below. The port is faster than the reference
+mainly because it folds the mirrored input of symmetric averaging into the same forward
+pass, as extra groups, rather than making a second call. The larger two load from a
+directory: `TimestralForecaster.Load("checkpoints/Timestral-209M", device)`, or any
+`IModelWeights`. The fetch script pins revisions and checks SHA-256; the weights packages
+check the same hashes at build time and refuse a payload that differs.
+
+The forecaster applies what the reference forecaster applies by default, so published
+numbers are reproduced:
+
+- **Symmetric averaging** (`SymmetricAveraging`, on): forecast the negated input too, with
+  every series negated, and average the reflection in.
+- **Non-negative clipping** (`ClipNonNegative`, on): a series whose observed context is
+  never negative is clipped at zero. Harmless on prices; never triggers on returns.
+- **Advancing refine frame**: horizon patch `j` is denormalised with the statistics of the
+  context plus the block's own medians for patches before it, the frame it was trained in.
+- **Quantile cap**: forecasts are held within 10⁴ context scales of the observed range.
+
+Known-future series are scaled by whole-row statistics, and a series observed only at 0
+and 1 is treated as an indicator. A context beyond 32,768 steps is refused rather than
+silently truncated, as Kronos's is. Not ported: past-only covariates as a separate role
+(a series not marked known is a joint target), categorical target encoding, and the
+block-by-block continuation past 1,024 steps.
+
 ## Batching
 
 Each forecaster has a batch form of its single call. Entries share a horizon and nothing
@@ -205,9 +268,10 @@ larger forward passes: one per anchor is the dominant cost of a backtest.
 |---|---|---|---|
 | t0 | `ForecastJoint`, `Forecast` | `ForecastJointBatch`, `ForecastBatch` | any entries, up to `MaxRowsPerPass` series; shorter contexts are left-padded and masked |
 | TimesFM | `ForecastJoint`, `Forecast` | `ForecastJointBatch`, `ForecastBatch` | entries of one shape (variates, length, context), up to `MaxBatchPerPass` |
+| Timestral | `ForecastJoint`, `Forecast` | `ForecastJointBatch`, `ForecastBatch` | as t0, up to `MaxRowsPerPass` rows; the mirrored half of symmetric averaging counts |
 | Kronos | `Infer`, `InferPath` (windows along one series) | `InferBatch` (final window of many series) | `batch` windows × `rollouts` |
 
-The t0 and TimesFM batches are on `IQuantileForecaster`, take `JointSeries` entries (or
+The t0, Timestral and TimesFM batches are on `IQuantileForecaster`, take `JointSeries` entries (or
 OHLCVA windows) as `ReadOnlyMemory`, and write `[entry][step][quantile]` into a span sized
 by `BatchOutputLength`. Anchors along one history are slices of one array, so building a
 backtest batch copies nothing:
@@ -230,7 +294,9 @@ make cross-sectional comparisons less noisy but leave their errors correlated. T
 host policy, `KronosForecaster.Seed`: `SamplingSeeds.PerSeries` gives each
 `KronosSeries.SeriesKey` its own stream, and `SamplingSeeds.Salted` derives a fresh,
 reproducible run from either.
-TimesFM and t0 emit quantiles directly, with no rollouts and nothing to aggregate. t0's
+TimesFM, t0 and Timestral emit quantiles directly, with no rollouts and nothing to
+aggregate. Timestral's symmetric averaging is the nearest thing: the input and its negation
+travel as two groups of one pass, and are combined per series afterwards. t0's
 upstream continuation past 1024 steps (not ported) would be the same pattern again: each
 requested quantile becomes a path, paths are folded into the batch as extra groups, and
 they are reduced per series to quantiles.
@@ -301,6 +367,18 @@ QK norm precedes the rotation, where TimesFM's follows it; and a padding patch h
 to attend to, so attention must return zero there, not NaN, or every row reading it is
 poisoned.
 
+**Timestral.** All four sizes agree with `mistralai/timestral` 1.0.0 stage by stage:
+scaling, masks and positions bit-exact, every other stage within 1.5e-6 relative, and
+forecasts within 9e-7 — with the forecaster's defaults and with them off, and including the covariate path,
+the refine frame and the electricity-price and M4 examples shared with t0. The reference
+builds a decoder token for every patch of the window and discards those before the
+horizon; the port builds only the horizon's, which is exact because the discarded ones
+cannot reach the rest. Details that would each have forecast plausibly if missed: the
+fused QKV projection is laid out `(qkv, head_dim, heads)`, not head-major; RoPE turns only
+the first half of each head, in the split-half layout; SwiGLU's SiLU falls on the second
+half, where t0's is on the first; and statistics are float64 Welford, which MPS cannot do,
+so they run on the CPU.
+
 ```bash
 ./scripts/fetch-checkpoints.sh                       # Kronos
 dotnet test tests/Tsfm.Forecasting.Kronos.Tests -c Release
@@ -316,6 +394,11 @@ dotnet run --project tests/Tsfm.Forecasting.TimesFm.Parity -c Release
 ./.venv/bin/python reference/dump_t0_parity.py checkpoints/t0-alpha
 ./.venv/bin/python reference/dump_t0_parity.py checkpoints/t0-beta
 dotnet run --project tests/Tsfm.Forecasting.T0.Parity -c Release -- t0-alpha t0-beta
+
+./scripts/fetch-timestral-checkpoint.sh all          # Timestral, revenue-restricted weights
+./.venv/bin/pip install "git+https://github.com/mistralai/timestral.git@a534bdbd244d64f3d9d743f46c7bf6fc330ed4ff"
+for m in 5M 28M 123M 209M; do ./.venv/bin/python reference/dump_timestral_parity.py checkpoints/Timestral-$m; done
+dotnet run --project tests/Tsfm.Forecasting.Timestral.Parity -c Release -- Timestral-5M Timestral-28M Timestral-123M Timestral-209M
 ```
 
 ## Attribution
@@ -335,6 +418,11 @@ Copyright 2026 The Forecasting Company, Apache-2.0, which in turn builds on Data
 [Toto](https://github.com/DataDog/toto) and Amazon's
 [Chronos-2](https://github.com/amazon-science/chronos-forecasting), both Apache-2.0. No
 weights or upstream sources are redistributed; checkpoints are fetched at pinned revisions.
+
+**Timestral.** Derived from [mistralai/timestral](https://github.com/mistralai/timestral),
+Copyright Mistral AI, Apache-2.0. The 5M and 28M weights are redistributed unmodified
+under Mistral AI's Modified MIT licence, which is reproduced in full in the weights packages;
+the 123M and 209M weights are not redistributed.
 
 This project is an independent port and is not affiliated with or endorsed by any of them.
 See NOTICE for the full attribution and the statement of changes.

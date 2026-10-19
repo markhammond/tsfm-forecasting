@@ -25,7 +25,35 @@
 - Weights are not bundled. The README gives pinned download commands with checksums for
   projects that only reference the package, and `Load` names them when files are missing.
 
-### Batching, across all three models
+### Tsfm.Forecasting.Timestral (Apache-2.0) — new
+
+- Inference for Mistral AI's Timestral family — 5M, 28M, 123M, 209M — ported from
+  `mistralai/timestral` 1.0.0: causal per-patch scaler, gated time/variate transformer with
+  partial RoPE, Decoupled Horizon Forecasting decoder tokens, monotone 21-quantile head.
+- `TimestralForecaster` takes the shared shape (`ForecastJoint`, `Forecast`, both batches)
+  and applies the reference forecaster's defaults — symmetric averaging, non-negative
+  clipping, advancing refine frame, quantile cap — so published numbers are reproduced.
+  The mirrored input of symmetric averaging rides in the same forward pass.
+- Verified stage by stage against the reference on all four sizes, with and without the
+  defaults, including the covariate path and the shared notebook examples. Faster than the
+  reference on CPU at every size.
+- Context up to 32,768 steps, refused beyond; up to 1,024 steps forecast per pass.
+
+### Tsfm.Forecasting.Timestral.Weights.5M and .28M (Mistral Modified MIT) — new
+
+- Timestral-5M (21 MB) and -28M (111 MB) embedded at pinned revisions; the build checks
+  each payload's SHA-256 and refuses one that differs.
+- **Revenue-restricted, not open source**: the licence withholds all rights from companies
+  above USD 20M monthly revenue. It ships verbatim as the package licence file, is
+  readable at run time (`Timestral5M.License`), and must be accepted on install.
+- 123M and 209M are fetched by `scripts/fetch-timestral-checkpoint.sh`, not packaged.
+
+### Tsfm.Forecasting
+
+- `IModelWeights`, `DirectoryWeights`, `EmbeddedWeights`: a tokenizer-free checkpoint
+  abstraction beside `ICheckpoint`, used by the Timestral weights packages.
+
+### Batching, across all the models
 
 - `IQuantileForecaster` (new, in `Tsfm.Forecasting`): the shared `ForecastJoint` /
   `Forecast` / `Quantiles` shape, plus `ForecastJointBatch` and `ForecastBatch` over many
@@ -51,12 +79,13 @@
 
 ### Packaging
 
-All six packages move to 0.2.0: the core gains the interface the model packages implement,
+All packages move to 0.2.0: the core gains the interface the model packages implement,
 and a project reference packs an exact-version dependency.
 
 ### Samples and testing
 
-- `samples/GroceryCovariates` runs on TimesFM or t0 (`-- t0-beta`) through the interface.
+- `samples/GroceryCovariates` runs on TimesFM, t0 or Timestral (`-- t0-beta`,
+  `-- Timestral-28M`) through the interface.
 - Batch tests for TimesFM and t0 run on small random-init models, so they bite in CI
   without weights; Kronos's run with the integration tests.
 - `Tsfm.Forecasting.T0.Tests` checks structural invariants on a tiny random-init model, so

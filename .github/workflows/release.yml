@@ -27,7 +27,9 @@ jobs:
           global-json-file: global.json
 
       - name: Fetch checkpoints
-        run: ./scripts/fetch-checkpoints.sh
+        run: |
+          ./scripts/fetch-checkpoints.sh
+          ./scripts/fetch-timestral-checkpoint.sh
 
       - name: Verify the tag matches the declared version
         if: startsWith(github.ref, 'refs/tags/v')

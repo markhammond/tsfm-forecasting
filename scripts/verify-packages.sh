@@ -14,7 +14,18 @@ for pkg in "$DIR"/*.nupkg; do
   echo "── $name (${size} MB)"
 
   contents=$(unzip -l "$pkg")
-  for required in LICENSE README.md; do
+  required_files="LICENSE README.md"
+  # Revenue-restricted weights must carry their own licence, and demand acceptance of it.
+  case "$name" in
+    Tsfm.Forecasting.Timestral.Weights.*)
+      required_files="$required_files LICENSE-Timestral-Weights"
+      if unzip -p "$pkg" '*.nuspec' | grep -q '<requireLicenseAcceptance>true'; then
+        echo "   ok      requires licence acceptance"
+      else
+        echo "   MISSING requireLicenseAcceptance"; fail=1
+      fi ;;
+  esac
+  for required in $required_files; do
     if grep -q "$required" <<< "$contents"; then
       echo "   ok      carries $required"
     else
@@ -30,7 +41,7 @@ for pkg in "$DIR"/*.nupkg; do
   # A weights package with no embedded payload builds and publishes cleanly, then fails
   # at load for every consumer — worth an explicit check.
   case "$name" in
-    Tsfm.Forecasting.Kronos.Weights.*)
+    Tsfm.Forecasting.Kronos.Weights.*|Tsfm.Forecasting.Timestral.Weights.*)
       if [ "$size" -lt 10 ]; then
         echo "   EMPTY   weights package is only ${size} MB; the checkpoint did not embed"; fail=1
       else
