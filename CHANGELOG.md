@@ -79,6 +79,9 @@
 
 ### Packaging
 
+`scripts/pack.sh` builds the whole set in one command — fetch, pack, verify — and prints
+the order to upload in by hand.
+
 All packages move to 0.2.0: the core gains the interface the model packages implement,
 and a project reference packs an exact-version dependency.
 

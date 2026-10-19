@@ -402,6 +402,17 @@ for m in 5M 28M 123M 209M; do ./.venv/bin/python reference/dump_timestral_parity
 dotnet run --project tests/Tsfm.Forecasting.Timestral.Parity -c Release -- Timestral-5M Timestral-28M Timestral-123M Timestral-209M
 ```
 
+## Building the packages
+
+```bash
+./scripts/pack.sh            # or: ./scripts/pack.sh <output-dir>
+```
+
+Fetches the checkpoints the weights packages embed, packs every package at the version in
+`Directory.Build.props` into `artifacts/`, verifies licences and payloads, and prints the
+order to upload in: each package depends on the exact version of its parent, so parents
+must be on nuget.org, and indexed, before their dependants. Nothing is pushed.
+
 ## Attribution
 
 **Kronos.** Model architecture, BSQ tokenizer and reference implementation by
