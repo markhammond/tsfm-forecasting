@@ -37,6 +37,16 @@
         <IsPackable>false</IsPackable>
     </PropertyGroup>
 
+    <!-- Tests and samples run only on the machine that builds them, so they take the native
+         libtorch for that platform alone. TorchSharp-cpu brings six, about 1 GB a project
+         against 240 MB for one, and on a CI runner every copy is real disk. The output path
+         stays bin/<Configuration>/net10.0. The packages in src carry no natives and are
+         left portable. -->
+    <PropertyGroup Condition="$([MSBuild]::MakeRelative('$(MSBuildThisFileDirectory)', '$(MSBuildProjectDirectory)').StartsWith('tests')) or $([MSBuild]::MakeRelative('$(MSBuildThisFileDirectory)', '$(MSBuildProjectDirectory)').StartsWith('samples'))">
+        <UseCurrentRuntimeIdentifier>true</UseCurrentRuntimeIdentifier>
+        <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    </PropertyGroup>
+
     <!-- Every package carries the licence and readme from the repository root, so the
          third-party notices travel with the binaries rather than living only here. -->
     <ItemGroup Condition="'$(IsPackable)' == 'true'">
